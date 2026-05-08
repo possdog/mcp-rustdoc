@@ -1,6 +1,6 @@
 # mcp-rustdoc
 
-> 🤖 This project was made by an LLM with a human in the loop.
+> 🤖 This code was written by a human-led AI agent.
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives AI agents rich, structured access to Rust crate documentation.
 
