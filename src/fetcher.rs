@@ -1,10 +1,31 @@
+//! Downloads and decompresses `.json.zst` rustdoc JSON from docs.rs.
+//!
+//! docs.rs only builds rustdoc JSON for crates published after 2025-05-23.
+//! Older versions return 404.
+//!
+//! Includes a format-patching pass that handles the v56→v57 transition
+//! (missing `path` field on `external_crates` entries).
+
 use crate::error::{McpRustdocError, Result};
 use reqwest::Client;
 use rustdoc_types::Crate;
 use std::io::Read;
 
+/// Downloads rustdoc JSON from `https://docs.rs/crate/{name}/{version}/json.zst`,
+/// decompresses it, and deserializes it into a `rustdoc_types::Crate`.
+///
+/// Retries once on transient network errors. Returns a descriptive error for
+/// 404s (e.g. pre-May-2025 crate versions that lack rustdoc JSON on docs.rs).
+/// Falls back to a format-patching pass when deserialization fails due to
+/// known format version differences (e.g. v56→v57 `external_crates.path`).
 pub struct Fetcher {
     client: Client,
+}
+
+impl Default for Fetcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Fetcher {
@@ -62,13 +83,13 @@ impl Fetcher {
                                 .and_then(|c| c.as_object_mut())
                             {
                                 for (_, crate_val) in crates.iter_mut() {
-                                    if let Some(obj) = crate_val.as_object_mut() {
-                                        if !obj.contains_key("path") {
-                                            obj.insert(
-                                                "path".to_string(),
-                                                serde_json::Value::String(String::new()),
-                                            );
-                                        }
+                                    if let Some(obj) = crate_val.as_object_mut()
+                                        && !obj.contains_key("path")
+                                    {
+                                        obj.insert(
+                                            "path".to_string(),
+                                            serde_json::Value::String(String::new()),
+                                        );
                                     }
                                 }
                             }

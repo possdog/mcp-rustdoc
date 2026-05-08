@@ -1,3 +1,9 @@
+//! Generates rustdoc JSON for local (unpublished) workspace crates via
+//! `cargo +nightly rustdoc --output-format json -Z unstable-options`.
+//!
+//! Includes staleness detection based on `Cargo.toml` and `src/` file
+//! modification times. Requires the **nightly** toolchain.
+
 use crate::error::{McpRustdocError, Result};
 use rustdoc_types::Crate;
 use serde::Deserialize;
@@ -20,7 +26,19 @@ struct Package {
     manifest_path: String,
 }
 
+/// Generates rustdoc JSON for local workspace crates via
+/// `cargo +nightly rustdoc --output-format json -Z unstable-options`.
+///
+/// Staleness detection compares the mtime of the generated JSON against
+/// `Cargo.toml` and all files under `src/`. Requires the **nightly**
+/// toolchain.
 pub struct Local;
+
+impl Default for Local {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Local {
     pub fn new() -> Self {
@@ -95,13 +113,12 @@ impl Local {
                         .into_iter()
                         .filter_map(|e| e.ok())
                     {
-                        if let Ok(metadata) = entry.metadata() {
-                            if let Ok(mtime) = metadata.modified() {
-                                if mtime > json_mtime {
-                                    is_newer = true;
-                                    break;
-                                }
-                            }
+                        if let Ok(metadata) = entry.metadata()
+                            && let Ok(mtime) = metadata.modified()
+                            && mtime > json_mtime
+                        {
+                            is_newer = true;
+                            break;
                         }
                     }
                     is_newer
@@ -156,6 +173,8 @@ impl Local {
         Ok(Some((krate, pkg.version.clone())))
     }
 
+    /// Return a Markdown listing of all workspace member crates with their
+    /// versions and manifest paths. Uses `cargo metadata` under the hood.
     pub async fn list_workspace_crates(&self) -> Result<String> {
         let cwd = env::current_dir()?;
 

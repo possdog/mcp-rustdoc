@@ -1,8 +1,22 @@
+//! Immutable filesystem cache for rustdoc JSON.
+//!
+//! Uses `dirs::cache_dir()` for a platform-appropriate cache directory
+//! (e.g. `~/Library/Caches/mcp-rustdoc/` on macOS). Entries are keyed
+//! by `(crate_name, version, target)` and never expire — a given
+//! published crate version is immutable.
+
 use crate::error::{McpRustdocError, Result};
 use rustdoc_types::Crate;
 use std::fs;
 use std::path::PathBuf;
 
+/// Filesystem-backed cache for deserialized `rustdoc_types::Crate` data.
+///
+/// Cache layout: `{system_cache_dir}/mcp-rustdoc/{crate_name}/{version}/{target}.json`
+/// On macOS this resolves to `~/Library/Caches/mcp-rustdoc/`.
+///
+/// Entries are immutable — once written they live on disk forever, which is
+/// sound for published crate docs (a given crate+version never changes).
 pub struct Cache {
     base_dir: PathBuf,
 }

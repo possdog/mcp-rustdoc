@@ -1,3 +1,8 @@
+//! Unified error type for all mcp-rustdoc operations.
+//!
+//! `McpRustdocError` wraps cache, I/O, network, JSON, and TOML errors
+//! plus a catch-all `Other` variant for ad-hoc error messages.
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]

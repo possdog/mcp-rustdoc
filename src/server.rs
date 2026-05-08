@@ -56,6 +56,15 @@ pub struct ImplementorsParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListWorkspaceCratesParams {}
 
+/// Generates JSON Schema for a type with a workaround for Gemini/Vertex AI
+/// strict schema requirements.
+///
+/// `schemars` emits `type: ["string", "null"]` and
+/// `anyOf: [{type: "string"}, {type: "null"}]` for `Option<T>` fields.
+/// Some strict schema consumers (Gemini/Vertex AI tool calling) reject both
+/// forms. This function strips `"null"` from any such type unions. The field
+/// remains optional because it is not in the `required` array of the parent
+/// schema object.
 fn json_schema_for<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::Value> {
     let schema = schema_for!(T);
     let mut value = serde_json::to_value(&schema).unwrap();
@@ -64,44 +73,44 @@ fn json_schema_for<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_j
     // They reject `type: ["string", "null"]` which schemars emits for Option<T>.
     // They also reject `anyOf: [{type: "string"}, {type: "null"}]`.
     // We strip the "null" type out. The field remains optional because it is not in the `required` array.
-    if let Some(obj) = value.as_object_mut() {
-        if let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
-            for (_, prop) in props.iter_mut() {
-                if let Some(prop_obj) = prop.as_object_mut() {
-                    // Check if it has an "anyOf" field containing a null type
-                    if let Some(any_of) = prop_obj.get("anyOf").and_then(|a| a.as_array()) {
-                        let has_null = any_of.iter().any(|v| {
+    if let Some(obj) = value.as_object_mut()
+        && let Some(props) = obj.get_mut("properties").and_then(|p| p.as_object_mut())
+    {
+        for (_, prop) in props.iter_mut() {
+            if let Some(prop_obj) = prop.as_object_mut() {
+                // Check if it has an "anyOf" field containing a null type
+                if let Some(any_of) = prop_obj.get("anyOf").and_then(|a| a.as_array()) {
+                    let has_null = any_of.iter().any(|v| {
+                        v.as_object()
+                            .and_then(|o| o.get("type"))
+                            .and_then(|t| t.as_str())
+                            == Some("null")
+                    });
+
+                    if has_null {
+                        // Extract the non-null object
+                        if let Some(non_null_obj) = any_of.iter().find(|v| {
                             v.as_object()
                                 .and_then(|o| o.get("type"))
                                 .and_then(|t| t.as_str())
-                                == Some("null")
-                        });
-
-                        if has_null {
-                            // Extract the non-null object
-                            if let Some(non_null_obj) = any_of.iter().find(|v| {
-                                v.as_object()
-                                    .and_then(|o| o.get("type"))
-                                    .and_then(|t| t.as_str())
-                                    != Some("null")
-                            }) {
-                                // We replace the `anyOf` field entirely with the contents of the non-null object
-                                let new_type = non_null_obj.get("type").unwrap().clone();
-                                prop_obj.insert("type".to_string(), new_type);
-                                prop_obj.remove("anyOf");
-                            }
+                                != Some("null")
+                        }) {
+                            // We replace the `anyOf` field entirely with the contents of the non-null object
+                            let new_type = non_null_obj.get("type").unwrap().clone();
+                            prop_obj.insert("type".to_string(), new_type);
+                            prop_obj.remove("anyOf");
                         }
                     }
+                }
 
-                    // Check if it has a direct "type" array
-                    if let Some(types) = prop_obj.get("type").and_then(|t| t.as_array()) {
-                        if types.iter().any(|v| v == "null") {
-                            // Extract the non-null type (e.g. "string" or "integer")
-                            if let Some(non_null_type) = types.iter().find(|v| *v != "null") {
-                                let new_type = non_null_type.clone();
-                                prop_obj.insert("type".to_string(), new_type);
-                            }
-                        }
+                // Check if it has a direct "type" array
+                if let Some(types) = prop_obj.get("type").and_then(|t| t.as_array())
+                    && types.iter().any(|v| v == "null")
+                {
+                    // Extract the non-null type (e.g. "string" or "integer")
+                    if let Some(non_null_type) = types.iter().find(|v| *v != "null") {
+                        let new_type = non_null_type.clone();
+                        prop_obj.insert("type".to_string(), new_type);
                     }
                 }
             }
@@ -111,6 +120,8 @@ fn json_schema_for<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_j
     value.as_object().unwrap().clone()
 }
 
+/// The MCP server implementation — holds the component instances
+/// (cache, fetcher, local, resolver, render) behind `Arc`s for sharing.
 #[derive(Clone)]
 pub struct RustdocServer {
     cache: std::sync::Arc<Cache>,
@@ -131,15 +142,22 @@ impl RustdocServer {
         })
     }
 
+    /// Obtain a parsed `rustdoc_types::Crate` for the requested crate and version.
+    ///
+    /// Resolution order (waterfall):
+    /// 1. If no version provided, try local workspace crate generation first.
+    /// 2. Resolve version via `Resolver` (Cargo.lock → Cargo.toml → docs.rs latest).
+    /// 3. Check disk cache.
+    /// 4. Fetch from docs.rs and cache the result.
     async fn get_crate(
         &self,
         crate_name: &str,
         version: Option<&str>,
     ) -> Result<Crate, McpRustdocError> {
-        if version.is_none() {
-            if let Ok(Some((krate, _))) = self.local.generate(crate_name).await {
-                return Ok(krate);
-            }
+        if version.is_none()
+            && let Ok(Some((krate, _))) = self.local.generate(crate_name).await
+        {
+            return Ok(krate);
         }
 
         let resolved_version = self.resolver.resolve_version(crate_name, version).await?;
@@ -278,7 +296,7 @@ impl ServerHandler for RustdocServer {
         _params: InitializeRequestParams,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        Ok(self.get_info().into())
+        Ok(self.get_info())
     }
 
     fn list_tools(

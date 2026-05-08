@@ -1,3 +1,7 @@
+//! Entrypoint: initialises Tokio runtime, tracing (stderr), and the MCP
+//! stdio transport. All logging goes to stderr because stdout carries the
+//! MCP wire protocol.
+
 use mcp_rustdoc::server::RustdocServer;
 use rmcp::{ServiceExt, transport::stdio};
 

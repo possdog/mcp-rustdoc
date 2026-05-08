@@ -2,6 +2,8 @@
     "$schema": "https://opencode.ai/config.json",
     "mcp": {
         "mcp-rustdoc": {
+            "type": "local",
+            "command": ["/Users/reilly/Documents/Repos/mcp-rustdoc/target/debug/mcp-rustdoc"],
             "enabled": true
         }
     }

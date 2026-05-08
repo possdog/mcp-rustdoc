@@ -1,14 +1,51 @@
+//! Converts `rustdoc_types::Crate` structs into LLM-optimized Markdown.
+//!
+//! ## Architecture
+//!
+//! The rendering pipeline has two layers:
+//!
+//! 1. **Free functions** — recursive type-level formatters that operate on
+//!    individual rustdoc-types data structures (`format_type`,
+//!    `format_generic_args`, `format_generic_bounds`, `format_generics`,
+//!    `format_where_clause`, `format_fn_signature`, etc.).
+//!
+//! 2. **`Render` struct methods** — higher-level entry points that consume
+//!    a full `Crate` and produce complete Markdown output for each MCP tool
+//!    (`list_items`, `get_item`, `search`, `implementations`, `implementors`).
+//!
+//! The key design constraint is that all output is plain Markdown — never
+//! HTML, never raw JSON trees. Type signatures are rendered as Rust code
+//! blocks, and output is kept concise to minimize LLM context usage.
+//!
+//! ## Known limitations
+//!
+//! * `find_item_by_path` falls back to a last-segment name match when the
+//!   full path is not in `krate.paths`. This is non-deterministic when items
+//!   in different modules share the same name. In practice this only affects
+//!   private/internal items not surfaced in `krate.paths`.
+//!
+//! * `resolve_links` does not handle `[text][id]` reference-style links or
+//!   namespace-prefixed links (`[struct@Foo]`).
+//!
+//! * Lifetime strings in rustdoc JSON already include the leading `'`, so
+//!   formatters must not prepend an extra one.
+
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use rustdoc_types::{
-    Abi, AssocItemConstraintKind, Crate, GenericArg, GenericArgs, GenericBound, GenericParamDefKind,
-    Item, ItemEnum, Term, TraitBoundModifier, WherePredicate,
+    Abi, AssocItemConstraintKind, Crate, GenericArg, GenericArgs, GenericBound,
+    GenericParamDefKind, Item, ItemEnum, Term, TraitBoundModifier, WherePredicate,
 };
 
 // ---------------------------------------------------------------------------
 // Type formatting helpers
 // ---------------------------------------------------------------------------
 
+/// Format a set of generic arguments — angle-bracketed (`<T, 'a>`),
+/// parenthesized (`(A, B) -> C`), or return-type notation (`(..)`).
+///
+/// Handles associated item constraints such as `Item = u32` and
+/// `IntoIter: Clone`.
 fn format_generic_args(args: &GenericArgs) -> String {
     match args {
         GenericArgs::AngleBracketed { args, constraints } => {
@@ -33,9 +70,7 @@ fn format_generic_args(args: &GenericArgs) -> String {
                     AssocItemConstraintKind::Equality(term) => {
                         let rhs = match term {
                             Term::Type(t) => format_type(t),
-                            Term::Constant(c) => {
-                                c.value.clone().unwrap_or_else(|| c.expr.clone())
-                            }
+                            Term::Constant(c) => c.value.clone().unwrap_or_else(|| c.expr.clone()),
                         };
                         format!("{}{} = {}", constraint.name, args_str, rhs)
                     }
@@ -68,6 +103,12 @@ fn format_generic_args(args: &GenericArgs) -> String {
     }
 }
 
+/// Format a list of generic bounds, joined with ` + `.
+///
+/// Handles trait bounds (`Clone + Send`), HRTBs (`for<'a> Fn(&'a str)`),
+/// trait bound modifiers (`?Sized`, `~const`), and lifetime outlives bounds
+/// (`'a: 'b + 'c`). Precise-capturing `use<…>` bounds are skipped — they
+/// have no surface-level syntax in stable Rust.
 fn format_generic_bounds(bounds: &[GenericBound]) -> String {
     let parts: Vec<String> = bounds
         .iter()
@@ -107,13 +148,10 @@ fn format_generic_bounds(bounds: &[GenericBound]) -> String {
                     .as_deref()
                     .map(format_generic_args)
                     .unwrap_or_default();
-                Some(format!(
-                    "{}{}{}{}",
-                    hrtb, modifier_str, trait_.path, args
-                ))
+                Some(format!("{}{}{}{}", hrtb, modifier_str, trait_.path, args))
             }
             GenericBound::Outlives(l) => Some(l.clone()), // already includes leading '
-            GenericBound::Use(_) => None, // precise capturing — skip
+            GenericBound::Use(_) => None,                 // precise capturing — skip
         })
         .collect();
     parts.join(" + ")
@@ -184,6 +222,115 @@ fn format_where_clause(generics: &rustdoc_types::Generics) -> String {
     format!("\nwhere\n    {}", predicates.join(",\n    "))
 }
 
+/// Format where predicates as a compact comma-separated inline string (no newlines).
+/// Used for impl block headers like `impl Foo<T> where T: Clone`.
+fn format_where_predicates_inline(generics: &rustdoc_types::Generics) -> String {
+    if generics.where_predicates.is_empty() {
+        return String::new();
+    }
+    let predicates: Vec<String> = generics
+        .where_predicates
+        .iter()
+        .map(|p| match p {
+            WherePredicate::BoundPredicate { type_, bounds, .. } => {
+                format!("{}: {}", format_type(type_), format_generic_bounds(bounds))
+            }
+            WherePredicate::LifetimePredicate { lifetime, outlives } => {
+                if outlives.is_empty() {
+                    lifetime.clone()
+                } else {
+                    format!("{}: {}", lifetime, outlives.join(" + "))
+                }
+            }
+            WherePredicate::EqPredicate { lhs, rhs } => {
+                let rhs_str = match rhs {
+                    Term::Type(t) => format_type(t),
+                    Term::Constant(c) => c.value.clone().unwrap_or_else(|| c.expr.clone()),
+                };
+                format!("{} = {}", format_type(lhs), rhs_str)
+            }
+        })
+        .collect();
+    predicates.join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Source link helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a registry package directory like `axum-core-0.5.5` into
+/// `("axum-core", "0.5.5")`. The version always starts with a digit
+/// after a hyphen, which disambiguates from hyphenated crate names.
+fn parse_pkg_dir(dir: &str) -> Option<(&str, &str)> {
+    let bytes = dir.as_bytes();
+    for i in 1..bytes.len() {
+        if bytes[i - 1] == b'-' && bytes[i].is_ascii_digit() {
+            return Some((&dir[..i - 1], &dir[i..]));
+        }
+    }
+    None
+}
+
+/// Build a Markdown source reference string for an item span.
+///
+/// - Relative paths (`src/foo.rs`) → docs.rs URL for the queried crate.
+/// - Absolute `/opt/rustwide/…` paths → docs.rs URL for the dep crate.
+/// - Other absolute paths (local workspace) → plain `file:line` text.
+fn make_source_ref(filename: &str, line: usize, crate_name: &str, version: &str) -> String {
+    const RUSTWIDE_PREFIX: &str = "/opt/rustwide/cargo-home/registry/src/";
+
+    // Convert relative `src/foo/bar.rs` to the URL path component
+    // docs.rs uses: src/{crate_name}/foo/bar.rs.html#{line}
+    let docs_rs_url = |name: &str, ver: &str, src_relative: &str| -> String {
+        // src_relative is like "src/foo/bar.rs" — strip "src/" then reattach under crate name
+        let inner = src_relative.strip_prefix("src/").unwrap_or(src_relative);
+        let name_under = name.replace('-', "_");
+        format!(
+            "https://docs.rs/{}/{}/src/{}/{}.html#{}",
+            name, ver, name_under, inner, line
+        )
+    };
+
+    if let Some(rest) = filename.strip_prefix(RUSTWIDE_PREFIX) {
+        // Absolute docs.rs build path:
+        // {registry_id}/{dep_name}-{dep_version}/src/...
+        if let Some(slash) = rest.find('/') {
+            let pkg_path = &rest[slash + 1..]; // "{name}-{version}/src/..."
+            if let Some(slash2) = pkg_path.find('/') {
+                let pkg_dir = &pkg_path[..slash2]; // "{name}-{version}"
+                let rel_path = &pkg_path[slash2 + 1..]; // "src/..."
+                if let Some((dep_name, dep_ver)) = parse_pkg_dir(pkg_dir) {
+                    let url = docs_rs_url(dep_name, dep_ver, rel_path);
+                    return format!("[`{}:{}`]({})", rel_path, line, url);
+                }
+            }
+        }
+        // Couldn't parse — fall through to plain text
+        return format!("`{}:{}`", filename, line);
+    }
+
+    if filename.starts_with('/') {
+        // Local workspace file — show as plain path:line for agent's file tools
+        return format!("`{}:{}`", filename, line);
+    }
+
+    // Relative path — the crate's own source
+    if !crate_name.is_empty() && !version.is_empty() {
+        let url = docs_rs_url(crate_name, version, filename);
+        format!("[`{}:{}`]({})", filename, line, url)
+    } else {
+        format!("`{}:{}`", filename, line)
+    }
+}
+
+/// Recursively format a `rustdoc_types::Type` into its Rust source-code
+/// representation.
+///
+/// This is the central type-rendering function. It handles every variant of
+/// `Type` in the rustdoc-types schema, including resolved paths with generic
+/// arguments, references with lifetimes, trait objects, function pointers,
+/// qualified paths (`<T as Trait>::Name`), arrays, slices, tuples, and raw
+/// pointers. Unknown/rare variants fall back to `/* type */`.
 fn format_type(ty: &rustdoc_types::Type) -> String {
     use rustdoc_types::Type;
     match ty {
@@ -274,10 +421,7 @@ fn format_type(ty: &rustdoc_types::Type) -> String {
             self_type,
             trait_,
         } => {
-            let my_args = args
-                .as_deref()
-                .map(format_generic_args)
-                .unwrap_or_default();
+            let my_args = args.as_deref().map(format_generic_args).unwrap_or_default();
             match trait_ {
                 Some(tr) if !tr.path.is_empty() => {
                     // Fully qualified: <Self as Trait>::Name
@@ -317,18 +461,18 @@ fn format_self_param(ty: &rustdoc_types::Type) -> String {
             is_mutable,
             type_,
         } => {
-            if let Type::Generic(g) = type_.as_ref() {
-                if g == "Self" {
-                    let lt = lifetime
-                        .as_deref()
-                        .map(|l| format!("{} ", l))
-                        .unwrap_or_default();
-                    return if *is_mutable {
-                        format!("&{}mut self", lt)
-                    } else {
-                        format!("&{}self", lt)
-                    };
-                }
+            if let Type::Generic(g) = type_.as_ref()
+                && g == "Self"
+            {
+                let lt = lifetime
+                    .as_deref()
+                    .map(|l| format!("{} ", l))
+                    .unwrap_or_default();
+                return if *is_mutable {
+                    format!("&{}mut self", lt)
+                } else {
+                    format!("&{}self", lt)
+                };
             }
             // Non-Self borrowed ref receiver (rare); fall through to generic form
             format!("self: {}", format_type(ty))
@@ -406,6 +550,12 @@ fn format_fn_signature(name: &str, f: &rustdoc_types::Function) -> String {
 
 pub struct Render;
 
+impl Default for Render {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Render {
     pub fn new() -> Self {
         Self
@@ -433,22 +583,28 @@ impl Render {
         // We look for any entry whose Id matches item's id.
         // Item.id is not directly accessible as a field, so we invert krate.paths.
         for (id, summary) in &krate.paths {
-            if krate.index.get(id).map(|i| std::ptr::eq(i, item)).unwrap_or(false) {
+            if krate
+                .index
+                .get(id)
+                .map(|i| std::ptr::eq(i, item))
+                .unwrap_or(false)
+            {
                 return Some(summary.path.join("::"));
             }
         }
         None
     }
 
+    /// Naively resolve `[link_text]` references in rustdoc doc comments to
+    /// their fully-qualified path strings. Links using the `[text][id]`
+    /// reference-style syntax are not resolved.
     fn resolve_links(krate: &Crate, item: &Item, docs: &str) -> String {
         let mut resolved = docs.to_string();
         for (link_text, id) in &item.links {
             if let Some(summary) = krate.paths.get(id) {
                 let full_path = summary.path.join("::");
-                resolved = resolved.replace(
-                    &format!("[{}]", link_text),
-                    &format!("[{}]", full_path),
-                );
+                resolved =
+                    resolved.replace(&format!("[{}]", link_text), &format!("[{}]", full_path));
             }
         }
         resolved
@@ -458,6 +614,11 @@ impl Render {
     // list_items
     // -----------------------------------------------------------------------
 
+    /// Build a Markdown listing of all direct children of a module.
+    ///
+    /// When `path` is `None`, lists the crate root. When `path` is `Some`,
+    /// looks up the named module and lists its contents. Re-exports (`use`
+    /// items) are resolved to show the target item's kind and doc summary.
     pub fn list_items(&self, krate: &Crate, path: Option<&str>) -> String {
         let root_id = &krate.root;
         let target_module = if let Some(p) = path {
@@ -488,30 +649,24 @@ impl Render {
             let (display_name, kind, summary) = match &child.inner {
                 ItemEnum::Use(u) if !u.is_glob => {
                     // Try to get the kind from the target item
-                    let target_kind = u
-                        .id
-                        .as_ref()
-                        .and_then(|id| krate.index.get(id))
-                        .map(|t| Self::item_kind_str(&t.inner))
-                        .unwrap_or("item");
-                    let target_docs = u
-                        .id
-                        .as_ref()
-                        .and_then(|id| krate.index.get(id))
-                        .and_then(|t| t.docs.as_deref())
-                        .unwrap_or("")
-                        .lines()
-                        .next()
-                        .unwrap_or("");
+                    let target_kind =
+                        u.id.as_ref()
+                            .and_then(|id| krate.index.get(id))
+                            .map(|t| Self::item_kind_str(&t.inner))
+                            .unwrap_or("item");
+                    let target_docs =
+                        u.id.as_ref()
+                            .and_then(|id| krate.index.get(id))
+                            .and_then(|t| t.docs.as_deref())
+                            .unwrap_or("")
+                            .lines()
+                            .next()
+                            .unwrap_or("");
                     (u.name.clone(), target_kind, target_docs.to_string())
                 }
                 ItemEnum::Use(u) if u.is_glob => {
                     // Glob imports: e.g. `pub use foo::*`
-                    (
-                        format!("{}::*", u.source),
-                        "use (glob)",
-                        String::new(),
-                    )
+                    (format!("{}::*", u.source), "use (glob)", String::new())
                 }
                 _ => {
                     let Some(name) = &child.name else { continue };
@@ -528,15 +683,14 @@ impl Render {
                 }
             };
 
-            output.push_str(&format!(
-                "- **{}** `{}`: {}\n",
-                kind, display_name, summary
-            ));
+            output.push_str(&format!("- **{}** `{}`: {}\n", kind, display_name, summary));
         }
 
         output
     }
 
+    /// Resolve an `ItemEnum` variant to a human-readable kind label for
+    /// use in `list_items` and `search` output.
     fn item_kind_str(inner: &ItemEnum) -> &'static str {
         match inner {
             ItemEnum::Module(_) => "module",
@@ -559,6 +713,13 @@ impl Render {
     // get_item
     // -----------------------------------------------------------------------
 
+    /// Build a detailed Markdown page for a single item — struct, enum,
+    /// function, trait, module, type alias, constant, or static.
+    ///
+    /// Output includes: header with generics, source link (docs.rs or local),
+    /// feature gates, deprecation notice, full doc comment with resolved
+    /// links, and kind-specific sections (fields, variants, signature,
+    /// trait items, type alias definition, constant/static definition).
     pub fn get_item(&self, krate: &Crate, path: &str) -> String {
         let Some(item) = Self::find_item_by_path(krate, path) else {
             return format!("Item `{}` not found.", path);
@@ -595,10 +756,7 @@ impl Render {
                 ));
             }
             ItemEnum::Function(f) => {
-                output.push_str(&format!(
-                    "# Function `{}`\n\n",
-                    name
-                ));
+                output.push_str(&format!("# Function `{}`\n\n", name));
                 let _ = f; // will be handled below in the match
             }
             ItemEnum::TypeAlias(ta) => {
@@ -621,17 +779,34 @@ impl Render {
             }
         }
 
+        // --- Source link ---
+        if let Some(span) = &item.span {
+            let crate_name = krate
+                .index
+                .get(&krate.root)
+                .and_then(|r| r.name.as_deref())
+                .unwrap_or("");
+            let version = krate.crate_version.as_deref().unwrap_or("");
+            let src_ref = make_source_ref(
+                &span.filename.to_string_lossy(),
+                span.begin.0,
+                crate_name,
+                version,
+            );
+            output.push_str(&format!("*Source: {}*\n\n", src_ref));
+        }
+
         // --- Feature gates ---
         let mut has_features = false;
         for attr in &item.attrs {
-            if let rustdoc_types::Attribute::Other(s) = attr {
-                if s.contains("cfg(") || s.contains("feature =") {
-                    if !has_features {
-                        output.push_str("**Feature Gates:**\n");
-                        has_features = true;
-                    }
-                    output.push_str(&format!("- `{}`\n", s));
+            if let rustdoc_types::Attribute::Other(s) = attr
+                && (s.contains("cfg(") || s.contains("feature ="))
+            {
+                if !has_features {
+                    output.push_str("**Feature Gates:**\n");
+                    has_features = true;
                 }
+                output.push_str(&format!("- `{}`\n", s));
             }
         }
         if has_features {
@@ -660,119 +835,111 @@ impl Render {
 
         // --- Kind-specific sections ---
         match &item.inner {
-            ItemEnum::Struct(s) => {
-                match &s.kind {
-                    rustdoc_types::StructKind::Plain { fields, .. } => {
-                        if !fields.is_empty() {
-                            output.push_str("### Fields\n\n");
-                            for field_id in fields {
-                                if let Some(field_item) = krate.index.get(field_id) {
-                                    if let Some(fname) = &field_item.name {
-                                        let ty_str =
-                                            if let ItemEnum::StructField(ty) = &field_item.inner {
-                                                format!(": {}", format_type(ty))
-                                            } else {
-                                                String::new()
-                                            };
-                                        let doc = field_item
-                                            .docs
-                                            .as_deref()
-                                            .unwrap_or("")
-                                            .lines()
-                                            .next()
-                                            .unwrap_or("");
-                                        output.push_str(&format!(
-                                            "- `{}`{} {}\n",
-                                            fname, ty_str, doc
-                                        ));
-                                    }
-                                }
-                            }
-                            output.push('\n');
-                        }
-                    }
-                    rustdoc_types::StructKind::Tuple(fields) => {
-                        let types: Vec<String> = fields
-                            .iter()
-                            .filter_map(|opt_id| {
-                                opt_id.as_ref().and_then(|id| krate.index.get(id))
-                            })
-                            .map(|field_item| {
-                                if let ItemEnum::StructField(ty) = &field_item.inner {
-                                    format_type(ty)
+            ItemEnum::Struct(s) => match &s.kind {
+                rustdoc_types::StructKind::Plain { fields, .. } => {
+                    if !fields.is_empty() {
+                        output.push_str("### Fields\n\n");
+                        for field_id in fields {
+                            if let Some(field_item) = krate.index.get(field_id)
+                                && let Some(fname) = &field_item.name
+                            {
+                                let ty_str = if let ItemEnum::StructField(ty) = &field_item.inner {
+                                    format!(": {}", format_type(ty))
                                 } else {
-                                    "?".to_string()
-                                }
-                            })
-                            .collect();
-                        if !types.is_empty() {
-                            output.push_str(&format!(
-                                "### Fields\n\nTuple struct: `{}({})`\n\n",
-                                name,
-                                types.join(", ")
-                            ));
-                        }
-                    }
-                    rustdoc_types::StructKind::Unit => {
-                        output.push_str("### Fields\n\nUnit struct (no fields).\n\n");
-                    }
-                }
-            }
-
-            ItemEnum::Enum(e) => {
-                if !e.variants.is_empty() {
-                    output.push_str("### Variants\n\n");
-                    for var_id in &e.variants {
-                        if let Some(var_item) = krate.index.get(var_id) {
-                            if let Some(vname) = &var_item.name {
-                                let doc = var_item
+                                    String::new()
+                                };
+                                let doc = field_item
                                     .docs
                                     .as_deref()
                                     .unwrap_or("")
                                     .lines()
                                     .next()
                                     .unwrap_or("");
+                                output.push_str(&format!("- `{}`{} {}\n", fname, ty_str, doc));
+                            }
+                        }
+                        output.push('\n');
+                    }
+                }
+                rustdoc_types::StructKind::Tuple(fields) => {
+                    let types: Vec<String> = fields
+                        .iter()
+                        .filter_map(|opt_id| opt_id.as_ref().and_then(|id| krate.index.get(id)))
+                        .map(|field_item| {
+                            if let ItemEnum::StructField(ty) = &field_item.inner {
+                                format_type(ty)
+                            } else {
+                                "?".to_string()
+                            }
+                        })
+                        .collect();
+                    if !types.is_empty() {
+                        output.push_str(&format!(
+                            "### Fields\n\nTuple struct: `{}({})`\n\n",
+                            name,
+                            types.join(", ")
+                        ));
+                    }
+                }
+                rustdoc_types::StructKind::Unit => {
+                    output.push_str("### Fields\n\nUnit struct (no fields).\n\n");
+                }
+            },
 
-                                if let ItemEnum::Variant(v) = &var_item.inner {
-                                    let variant_sig = match &v.kind {
-                                        rustdoc_types::VariantKind::Plain => vname.clone(),
-                                        rustdoc_types::VariantKind::Tuple(fields) => {
-                                            let types: Vec<String> = fields
-                                                .iter()
-                                                .filter_map(|opt_id| {
-                                                    opt_id.as_ref().and_then(|id| krate.index.get(id))
-                                                })
-                                                .map(|fi| {
+            ItemEnum::Enum(e) => {
+                if !e.variants.is_empty() {
+                    output.push_str("### Variants\n\n");
+                    for var_id in &e.variants {
+                        if let Some(var_item) = krate.index.get(var_id)
+                            && let Some(vname) = &var_item.name
+                        {
+                            let doc = var_item
+                                .docs
+                                .as_deref()
+                                .unwrap_or("")
+                                .lines()
+                                .next()
+                                .unwrap_or("");
+
+                            if let ItemEnum::Variant(v) = &var_item.inner {
+                                let variant_sig = match &v.kind {
+                                    rustdoc_types::VariantKind::Plain => vname.clone(),
+                                    rustdoc_types::VariantKind::Tuple(fields) => {
+                                        let types: Vec<String> = fields
+                                            .iter()
+                                            .filter_map(|opt_id| {
+                                                opt_id.as_ref().and_then(|id| krate.index.get(id))
+                                            })
+                                            .map(|fi| {
+                                                if let ItemEnum::StructField(ty) = &fi.inner {
+                                                    format_type(ty)
+                                                } else {
+                                                    "?".to_string()
+                                                }
+                                            })
+                                            .collect();
+                                        format!("{}({})", vname, types.join(", "))
+                                    }
+                                    rustdoc_types::VariantKind::Struct { fields, .. } => {
+                                        let field_strs: Vec<String> = fields
+                                            .iter()
+                                            .filter_map(|id| krate.index.get(id))
+                                            .filter_map(|fi| {
+                                                fi.name.as_ref().map(|fn_| {
                                                     if let ItemEnum::StructField(ty) = &fi.inner {
-                                                        format_type(ty)
+                                                        format!("{}: {}", fn_, format_type(ty))
                                                     } else {
-                                                        "?".to_string()
+                                                        fn_.clone()
                                                     }
                                                 })
-                                                .collect();
-                                            format!("{}({})", vname, types.join(", "))
-                                        }
-                                        rustdoc_types::VariantKind::Struct { fields, .. } => {
-                                            let field_strs: Vec<String> = fields
-                                                .iter()
-                                                .filter_map(|id| krate.index.get(id))
-                                                .filter_map(|fi| {
-                                                    fi.name.as_ref().map(|fn_| {
-                                                        if let ItemEnum::StructField(ty) = &fi.inner {
-                                                            format!("{}: {}", fn_, format_type(ty))
-                                                        } else {
-                                                            fn_.clone()
-                                                        }
-                                                    })
-                                                })
-                                                .collect();
-                                            format!("{} {{ {} }}", vname, field_strs.join(", "))
-                                        }
-                                    };
-                                    output.push_str(&format!("- `{}`: {}\n", variant_sig, doc));
-                                } else {
-                                    output.push_str(&format!("- `{}`: {}\n", vname, doc));
-                                }
+                                            })
+                                            .collect();
+                                        format!("{} {{ {} }}", vname, field_strs.join(", "))
+                                    }
+                                };
+                                output.push_str(&format!("- `{}`: {}\n", variant_sig, doc));
+                            } else {
+                                output.push_str(&format!("- `{}`: {}\n", vname, doc));
                             }
                         }
                     }
@@ -801,10 +968,7 @@ impl Render {
             }
 
             ItemEnum::Constant { type_, const_ } => {
-                let val = const_
-                    .value
-                    .as_deref()
-                    .unwrap_or_else(|| const_.expr.as_str());
+                let val = const_.value.as_deref().unwrap_or(const_.expr.as_str());
                 output.push_str(&format!(
                     "### Definition\n\n```rust\nconst {}: {} = {};\n```\n\n",
                     name,
@@ -864,7 +1028,11 @@ impl Render {
                         required_methods.push(entry);
                     }
                 }
-                ItemEnum::AssocType { generics, bounds, type_ } => {
+                ItemEnum::AssocType {
+                    generics,
+                    bounds,
+                    type_,
+                } => {
                     let gen_str = format_generics(generics);
                     let bounds_str = if !bounds.is_empty() {
                         format!(": {}", format_generic_bounds(bounds))
@@ -875,7 +1043,10 @@ impl Render {
                         .as_ref()
                         .map(|t| format!(" = {}", format_type(t)))
                         .unwrap_or_default();
-                    let entry = format!("type {}{}{}{};", child_name, gen_str, bounds_str, default_str);
+                    let entry = format!(
+                        "type {}{}{}{};",
+                        child_name, gen_str, bounds_str, default_str
+                    );
                     assoc_types.push(if child_doc.is_empty() {
                         format!("`{}`", entry)
                     } else {
@@ -935,6 +1106,13 @@ impl Render {
     // search
     // -----------------------------------------------------------------------
 
+    /// Fuzzy-search item names and doc comments across the entire crate,
+    /// returning up to `limit` results sorted by match score.
+    ///
+    /// Uses the `skim` fuzzy-matcher (SkimV2 algorithm) with multi-word
+    /// matching: every whitespace-separated query term must fuzzy-match
+    /// either the item name or its doc comment. Doc comment matches count
+    /// at half weight. Results include the full qualified path for context.
     pub fn search(&self, krate: &Crate, query: &str, limit: usize) -> String {
         let matcher = SkimMatcherV2::default();
         let terms: Vec<&str> = query.split_whitespace().collect();
@@ -1001,6 +1179,12 @@ impl Render {
     // implementations
     // -----------------------------------------------------------------------
 
+    /// For a struct, enum, or union: list all impl blocks (inherent methods
+    /// shown with full signatures grouped by impl block; trait implementations
+    /// collected into a compact list).
+    ///
+    /// For a trait: show the trait's own interface — required methods,
+    /// provided methods, associated types, and associated constants.
     pub fn implementations(&self, krate: &Crate, path: &str) -> String {
         let Some(item) = Self::find_item_by_path(krate, path) else {
             return format!("Item `{}` not found.", path);
@@ -1023,16 +1207,20 @@ impl Render {
         }
     }
 
-    fn render_type_impls(
-        krate: &Crate,
-        path: &str,
-        impls: &[rustdoc_types::Id],
-    ) -> String {
+    /// Render impl blocks for a concrete type.
+    ///
+    /// Separate passes:
+    /// 1. The complete list of trait impl names for a given type — `Clone for Router<S>`, `Debug for Router<S>`, etc.
+    /// 2. The full signature of each inherent method organized by impl block followed by a compact list of trait implementations.
+    fn render_type_impls(krate: &Crate, path: &str, impls: &[rustdoc_types::Id]) -> String {
         let mut output = format!("# Implementations for `{}`\n\n", path);
         if impls.is_empty() {
             output.push_str("*No implementations found.*\n");
             return output;
         }
+
+        let mut trait_impl_strs: Vec<String> = Vec::new();
+        let mut found_any = false;
 
         for id in impls {
             let Some(impl_item) = krate.index.get(id) else {
@@ -1042,7 +1230,6 @@ impl Render {
                 continue;
             };
 
-            // Skip synthetic/compiler-generated impls to reduce noise
             if imp.is_synthetic {
                 continue;
             }
@@ -1050,31 +1237,68 @@ impl Render {
             let for_type = format_type(&imp.for_);
 
             if let Some(trait_) = &imp.trait_ {
+                // Collect trait impls for a compact list at the end
                 let trait_args = trait_
                     .args
                     .as_deref()
                     .map(format_generic_args)
                     .unwrap_or_default();
                 let neg = if imp.is_negative { "!" } else { "" };
-                output.push_str(&format!(
-                    "- `impl {}{}{} for {}`",
+                trait_impl_strs.push(format!(
+                    "`{}{}{} for {}`",
                     neg, trait_.path, trait_args, for_type
                 ));
             } else {
-                // Inherent impl: list method names
-                let method_names: Vec<&str> = imp
-                    .items
-                    .iter()
-                    .filter_map(|mid| krate.index.get(mid))
-                    .filter_map(|m| m.name.as_deref())
-                    .collect();
-                output.push_str(&format!("- `impl {}`", for_type));
-                if !method_names.is_empty() {
-                    output.push_str(&format!(": `{}`", method_names.join("`, `")));
+                // Inherent impl block: render a section with full method signatures
+                found_any = true;
+
+                let where_clause = format_where_predicates_inline(&imp.generics);
+                if where_clause.is_empty() {
+                    output.push_str(&format!("**`impl {}`**\n\n", for_type));
+                } else {
+                    output.push_str(&format!(
+                        "**`impl {} where {}`**\n\n",
+                        for_type, where_clause
+                    ));
                 }
+
+                let mut sigs: Vec<String> = Vec::new();
+                for mid in &imp.items {
+                    if let Some(method_item) = krate.index.get(mid)
+                        && let ItemEnum::Function(f) = &method_item.inner
+                    {
+                        let method_name = method_item.name.as_deref().unwrap_or("_");
+                        sigs.push(format_fn_signature(method_name, f));
+                    }
+                }
+
+                if sigs.is_empty() {
+                    output.push_str("*No public methods.*\n\n");
+                } else {
+                    output.push_str("```rust\n");
+                    for sig in &sigs {
+                        output.push_str(sig);
+                        output.push('\n');
+                    }
+                    output.push_str("```\n\n");
+                }
+            }
+        }
+
+        // Trait implementations — compact bulleted list
+        if !trait_impl_strs.is_empty() {
+            found_any = true;
+            output.push_str("**Trait implementations:**\n\n");
+            for s in &trait_impl_strs {
+                output.push_str(&format!("- {}\n", s));
             }
             output.push('\n');
         }
+
+        if !found_any {
+            output.push_str("*No implementations found.*\n");
+        }
+
         output
     }
 
@@ -1082,6 +1306,14 @@ impl Render {
     // implementors
     // -----------------------------------------------------------------------
 
+    /// For a trait: list every concrete type *within this crate* that
+    /// implements it. Types are formatted via `format_type` so generics,
+    /// arrays, primitives, and tuple types all render correctly.
+    ///
+    /// Cross-crate implementors (e.g. `impl Iterator for MyType` where
+    /// `MyType` lives in a different crate) are an architectural limitation
+    /// of rustdoc JSON — the JSON only contains impls defined within the
+    /// queried crate.
     pub fn implementors(&self, krate: &Crate, path: &str) -> String {
         let Some(item) = Self::find_item_by_path(krate, path) else {
             return format!("Item `{}` not found.", path);
