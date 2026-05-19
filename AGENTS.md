@@ -44,7 +44,7 @@ against strict schema clients.
      `format_where_clause`, `format_fn_signature`, `format_self_param`.
 
 2. **`Render` struct methods** — produce complete output:
-   - `list_items`, `get_item`, `search`, `implementations`, `implementors`.
+   - `list-items`, `get-item`, `search`, `implementations`, `implementors`.
 
 ### Key gotchas
 
@@ -52,7 +52,7 @@ against strict schema clients.
   (e.g. `"'static"`, `"'a"`). Never prepend an extra `'`.
 - **`format_type` is the single choke point** for type rendering. Any change
   to how a type variant renders must go through this function.
-- **Source links** in `get_item` are built by `make_source_ref()` which
+- **Source links** in `get-item` are built by `make_source_ref()` which
   handles three path formats: relative (`src/foo.rs` → docs.rs URL),
   absolute `/opt/rustwide/…` (→ dep crate docs.rs URL), and other absolute
   paths (→ plain `file:line` for local workspace use).

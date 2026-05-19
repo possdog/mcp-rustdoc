@@ -11,7 +11,7 @@
 //!
 //! 2. **`Render` struct methods** — higher-level entry points that consume
 //!    a full `Crate` and produce complete Markdown output for each MCP tool
-//!    (`list_items`, `get_item`, `search`, `implementations`, `implementors`).
+//!    (`list-items`, `get-item`, `search`, `implementations`, `implementors`).
 //!
 //! The key design constraint is that all output is plain Markdown — never
 //! HTML, never raw JSON trees. Type signatures are rendered as Rust code
@@ -611,7 +611,7 @@ impl Render {
     }
 
     // -----------------------------------------------------------------------
-    // list_items
+    // list-items
     // -----------------------------------------------------------------------
 
     /// Build a Markdown listing of all direct children of a module.
@@ -690,7 +690,7 @@ impl Render {
     }
 
     /// Resolve an `ItemEnum` variant to a human-readable kind label for
-    /// use in `list_items` and `search` output.
+    /// use in `list-items` and `search` output.
     fn item_kind_str(inner: &ItemEnum) -> &'static str {
         match inner {
             ItemEnum::Module(_) => "module",

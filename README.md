@@ -19,11 +19,11 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 The server exposes 6 powerful tools to your AI agent:
 
-1. **`list_workspace_crates`**
+1. **`list-workspace-crates`**
    - Lists all crates in the current workspace with their versions, local paths, and availability status.
-2. **`list_items`**
+2. **`list-items`**
    - Lists all items (structs, enums, functions, traits, modules, etc.) inside a specific crate or module.
-3. **`get_item`**
+3. **`get-item`**
    - Gets detailed documentation for a specific item, including full doc comments, type signatures, struct fields, enum variants, and feature gates.
 4. **`search`**
    - Performs a fast, multi-word fuzzy search across all item names and doc comments within a crate.

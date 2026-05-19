@@ -315,7 +315,7 @@ impl ServerHandler for RustdocServer {
             Ok(ListToolsResult {
                 tools: vec![
                     Tool {
-                        name: "list_items".into(),
+                        name: "list-items".into(),
                         description: Some("List items in a crate or module — structs, enums, functions, traits, modules, constants, type aliases, etc.".into()),
                         input_schema: std::sync::Arc::new(list_items_schema),
                         title: None,
@@ -325,7 +325,7 @@ impl ServerHandler for RustdocServer {
                         meta: None,
                     },
                     Tool {
-                        name: "get_item".into(),
+                        name: "get-item".into(),
                         description: Some("Get detailed documentation for a specific item — includes full doc comments, type signature, struct fields, enum variants, function parameters, feature gates, and code examples.".into()),
                         input_schema: std::sync::Arc::new(get_item_schema),
                         title: None,
@@ -365,7 +365,7 @@ impl ServerHandler for RustdocServer {
                         meta: None,
                     },
                     Tool {
-                        name: "list_workspace_crates".into(),
+                        name: "list-workspace-crates".into(),
                         description: Some("List all crates in the current workspace with their versions, local paths, and availability status.".into()),
                         input_schema: std::sync::Arc::new(list_workspace_crates_schema),
                         title: None,
@@ -390,14 +390,14 @@ impl ServerHandler for RustdocServer {
         let arguments = params.arguments.unwrap_or_default();
 
         match name.as_ref() {
-            "list_items" => {
+            "list-items" => {
                 let p: ListItemsParams =
                     serde_json::from_value(serde_json::Value::Object(arguments))
                         .map_err(Self::to_error_data)?;
                 self.list_items_impl(&p.crate_name, p.version.as_deref(), p.item_path.as_deref())
                     .await
             }
-            "get_item" => {
+            "get-item" => {
                 let p: GetItemParams = serde_json::from_value(serde_json::Value::Object(arguments))
                     .map_err(Self::to_error_data)?;
                 self.get_item_impl(&p.crate_name, p.version.as_deref(), &p.item_path)
@@ -423,7 +423,7 @@ impl ServerHandler for RustdocServer {
                 self.implementors_impl(&p.crate_name, p.version.as_deref(), &p.trait_path)
                     .await
             }
-            "list_workspace_crates" => self.list_workspace_crates_impl().await,
+            "list-workspace-crates" => self.list_workspace_crates_impl().await,
             _ => Err(Self::to_error_data(format!("Unknown tool: {}", name))),
         }
     }
