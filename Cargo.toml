@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "An MCP for giving agents access to crate documentation."
 license = "AGPL-3.0-only"
-repository = "https://tangled.org/poss.dog/mcp-windowpeek"
+repository = "https://tangled.org/poss.dog/mcp-rustdoc"
 keywords = ["mcp", "docs"]
 categories = ["development-tools"]
 
