@@ -91,4 +91,6 @@ against strict schema clients.
   `--output-format json -Z unstable-options`.
 - **Version resolution is baked in** — every tool that takes `crate_name`
   resolves versions internally (explicit version → Cargo.lock → Cargo.toml
-  → crates.io latest). No separate tool call needed.
+  → crates.io latest). No separate tool call needed. crates.io lookups are
+  cached in memory (24h TTL for versions, 1h for not-found misses); a
+  newly published version can lag up to that TTL.
