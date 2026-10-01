@@ -1,7 +1,7 @@
-//! Resolves crate versions from the local project context or docs.rs.
+//! Resolves crate versions from the local project context or crates.io.
 //!
 //! The resolution waterfall is: explicit version → Cargo.lock → Cargo.toml
-//! → docs.rs API (latest published version). All paths search upward from
+//! → crates.io API (latest published version). All paths search upward from
 //! `cwd`, so behavior depends on where the MCP server process was started.
 
 use crate::error::{McpRustdocError, Result};
@@ -14,14 +14,21 @@ use std::path::{Path, PathBuf};
 /// 2. `Cargo.lock` — the exact version pinned in the current project.
 /// 3. `Cargo.toml` — the specified version from `[dependencies]` with
 ///    leading sigils (`^`, `~`, etc.) stripped.
-/// 4. The docs.rs API — the latest version published to docs.rs.
+/// 4. The crates.io API — the latest version published to crates.io.
 pub struct Resolver {
     client: Client,
 }
 
+// Subset of the `GET https://crates.io/api/v1/crates/{name}` response.
 #[derive(serde::Deserialize)]
-struct DocsRsMetadata {
-    version: String,
+struct CratesIoResponse {
+    #[serde(rename = "crate")]
+    krate: CratesIoCrate,
+}
+
+#[derive(serde::Deserialize)]
+struct CratesIoCrate {
+    max_version: String,
 }
 
 impl Default for Resolver {
@@ -69,13 +76,13 @@ impl Resolver {
             // For now, if we found it in Cargo.toml, we can just return it, though
             // it might have '^' or '~' which might fail in docs.rs URL.
             // Let's strip '^', '~', '=', '>', '<' to make a basic guess,
-            // or just rely on the docs.rs fallback.
+            // or just rely on the crates.io fallback.
             let clean_version = version.trim_start_matches(|c| "^~=>< ".contains(c));
             return Ok(clean_version.to_string());
         }
 
-        // 3. Latest from docs.rs
-        self.fetch_latest_from_docs_rs(crate_name).await
+        // 3. Latest from crates.io
+        self.fetch_latest_from_crates_io(crate_name).await
     }
 
     /// Walk up the directory tree from `start_dir` looking for `file_name`.
@@ -142,20 +149,23 @@ impl Resolver {
         )))
     }
 
-    /// Query `https://docs.rs/crate/{name}/json` for the latest published version.
-    async fn fetch_latest_from_docs_rs(&self, crate_name: &str) -> Result<String> {
-        let url = format!("https://docs.rs/crate/{}/json", crate_name);
+    /// Query `https://crates.io/api/v1/crates/{name}` for the latest published
+    /// version. This is used as the final fallback when the crate is not in the
+    /// local project context. (The previous `https://docs.rs/crate/{name}/json`
+    /// endpoint stopped returning JSON metadata and now serves HTML.)
+    async fn fetch_latest_from_crates_io(&self, crate_name: &str) -> Result<String> {
+        let url = format!("https://crates.io/api/v1/crates/{}", crate_name);
 
         let response = self.client.get(&url).send().await?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(McpRustdocError::Other(format!(
-                "Crate {} not found on docs.rs. It might be a local workspace crate or misspelled.",
+                "Crate {} not found on crates.io. It might be a local workspace crate or misspelled.",
                 crate_name
             )));
         }
 
-        let metadata: DocsRsMetadata = response.error_for_status()?.json().await?;
-        Ok(metadata.version)
+        let response: CratesIoResponse = response.error_for_status()?.json().await?;
+        Ok(response.krate.max_version)
     }
 }

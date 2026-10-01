@@ -146,7 +146,7 @@ impl RustdocServer {
     ///
     /// Resolution order (waterfall):
     /// 1. If no version provided, try local workspace crate generation first.
-    /// 2. Resolve version via `Resolver` (Cargo.lock → Cargo.toml → docs.rs latest).
+    /// 2. Resolve version via `Resolver` (Cargo.lock → Cargo.toml → crates.io latest).
     /// 3. Check disk cache.
     /// 4. Fetch from docs.rs and cache the result.
     async fn get_crate(
