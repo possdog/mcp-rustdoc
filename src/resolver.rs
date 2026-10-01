@@ -5,6 +5,7 @@
 //! `cwd`, so behavior depends on where the MCP server process was started.
 
 use crate::error::{McpRustdocError, Result};
+use crate::flight::SingleFlight;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::env;
@@ -44,6 +45,7 @@ struct CachedLatest {
 pub struct Resolver {
     client: Client,
     latest_cache: Mutex<HashMap<String, CachedLatest>>,
+    flight: SingleFlight,
 }
 
 // Subset of the `GET https://crates.io/api/v1/crates/{name}` response.
@@ -72,6 +74,7 @@ impl Resolver {
                 .build()
                 .unwrap_or_default(),
             latest_cache: Mutex::new(HashMap::new()),
+            flight: SingleFlight::new(),
         }
     }
 
@@ -109,7 +112,13 @@ impl Resolver {
             return Ok(clean_version.to_string());
         }
 
-        // 3. Latest from crates.io, served from the TTL cache when possible
+        // 3. Latest from crates.io. Single-flight per crate: concurrent calls
+        //    for the same crate share one crates.io request instead of each
+        //    missing the TTL cache and racing to fetch it.
+        let _guard = self.flight.lock_for(crate_name).await;
+
+        // Waiters re-check the cache after acquiring — the first arrival
+        // may have resolved and cached the version while we waited.
         if let Some(cached) = self.get_cached_latest(crate_name) {
             tracing::debug!("Using cached crates.io version for {}", crate_name);
             return match cached {

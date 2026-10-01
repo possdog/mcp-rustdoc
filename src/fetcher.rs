@@ -42,6 +42,11 @@ impl Fetcher {
     /// docs.rs serves this as a zstd compressed JSON file.
     pub async fn fetch(&self, crate_name: &str, version: &str) -> Result<Crate> {
         let url = format!("https://docs.rs/crate/{}/{}/json.zst", crate_name, version);
+        tracing::debug!(
+            "Fetching rustdoc JSON from docs.rs for {} v{}",
+            crate_name,
+            version
+        );
 
         let mut attempts = 0;
         let max_attempts = 2;

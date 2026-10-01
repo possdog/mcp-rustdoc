@@ -17,6 +17,7 @@ src/main.rs          entrypoint: tokio runtime + MCP stdio transport
 src/server.rs        RustdocServer (manual tool routing, no rmcp macros)
 src/render.rs        crate JSON → LLM-friendly Markdown (~1300 lines)
 src/fetcher.rs       downloads .json.zst from docs.rs
+src/flight.rs        single-flight dedup for concurrent fetches (version + JSON)
 src/resolver.rs      version resolution: explicit → Cargo.lock → Cargo.toml → crates.io
 src/local.rs         cargo +nightly rustdoc for workspace crates
 src/cache.rs         immutable filesystem cache (dirs::cache_dir())
