@@ -71,11 +71,11 @@ The binary will be located at `target/release/cratedoc` — copy or symlink it o
 
 ### Using with an AI agent
 
-A matching `SKILL.md` ships in the repository root. Agents that support skills (e.g. Mistral Vibe) load it on demand, so the tool costs no context until it is actually needed. Copy or symlink the skill into your skills directory to make it available everywhere:
+A skill ships at `.agents/skills/cratedoc/SKILL.md`. Agents that discover skills in `.agents/skills/` (e.g. Mistral Vibe) load it on demand, so the tool costs no context until it is actually needed. To make it available in every project, symlink it into your global skills directory:
 
 ```bash
 mkdir -p ~/.vibe/skills/cratedoc
-ln -s "$(pwd)/SKILL.md" ~/.vibe/skills/cratedoc/SKILL.md
+ln -s "$(pwd)/.agents/skills/cratedoc/SKILL.md" ~/.vibe/skills/cratedoc/SKILL.md
 ```
 
 The skill body documents every subcommand, so the agent can discover exact usage at run time.
