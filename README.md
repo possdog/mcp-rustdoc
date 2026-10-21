@@ -1,10 +1,10 @@
-# mcp-rustdoc
+# cratedoc
 
 > 🤖 This code was written by a human-led AI agent.
 
 A CLI that gives humans, AI agents, and shell scripts rich, structured access to Rust crate documentation.
 
-Instead of hallucinating API signatures or scraping raw HTML from docs.rs, `mcp-rustdoc` fetches and parses the exact `rustdoc` JSON ASTs and formats them into clean, LLM-optimized Markdown. It works as a plain command-line tool: agents learn it on demand via a `SKILL.md` instead of carrying tool definitions in every session, and its stdout-only output can be piped straight into `grep`, `head`, or other commands.
+Instead of hallucinating API signatures or scraping raw HTML from docs.rs, `cratedoc` fetches and parses the exact `rustdoc` JSON ASTs and formats them into clean, LLM-optimized Markdown. It works as a plain command-line tool: agents learn it on demand via a `SKILL.md` instead of carrying tool definitions in every session, and its stdout-only output can be piped straight into `grep`, `head`, or other commands.
 
 ## Features
 
@@ -12,7 +12,7 @@ Instead of hallucinating API signatures or scraping raw HTML from docs.rs, `mcp-
 - **Local Workspace Support:** Automatically runs `cargo +nightly rustdoc` to generate documentation for your unpublished, local workspace crates on the fly (with intelligent caching to avoid slow, repeated builds).
 - **Intelligent Version Resolution:** Automatically infers the correct crate version by inspecting your project's `Cargo.lock` or `Cargo.toml`.
 - **Rich Formatting:** Reconstructs complex `rustdoc-types` like function signatures, struct fields, and enum variants back into readable Rust syntax.
-- **Cross-References:** Automatically resolves intra-doc links (e.g., ``[`Cache`]`` becomes ``[`mcp_rustdoc::cache::Cache`]``) so agents can easily navigate the codebase.
+- **Cross-References:** Automatically resolves intra-doc links (e.g., ``[`Cache`]`` becomes ``[`cratedoc::cache::Cache`]``) so agents can easily navigate the codebase.
 - **Feature Gates:** Explicitly annotates items that require specific `#[cfg(feature = "...")]` flags.
 
 ## Commands
@@ -39,10 +39,10 @@ All crate-taking subcommands accept `--version <VERSION>` to pin a release; with
 Markdown goes to stdout, and logs/errors go to stderr, so output composes with other shell commands:
 
 ```bash
-mcp-rustdoc list-items serde | grep module
-mcp-rustdoc search tokio runtime --limit 20 | head -30
-mcp-rustdoc get-item serde_json serde_json::Value | less
-mcp-rustdoc get-item serde serde::Serialize || echo "not found"
+cratedoc list-items serde | grep module
+cratedoc search tokio runtime --limit 20 | head -30
+cratedoc get-item serde_json serde_json::Value | less
+cratedoc get-item serde serde::Serialize || echo "not found"
 ```
 
 A missing item or crate is an error: message on stderr, exit code 1.
@@ -62,20 +62,20 @@ rustup toolchain install nightly
 Clone the repository and build it in release mode:
 
 ```bash
-git clone https://codeberg.org/possdog/mcp-rustdoc.git
-cd mcp-rustdoc
+git clone https://codeberg.org/possdog/cratedoc.git
+cd cratedoc
 cargo build --release
 ```
 
-The binary will be located at `target/release/mcp-rustdoc` — copy or symlink it onto your `PATH`, or install it directly with `cargo install --path .`.
+The binary will be located at `target/release/cratedoc` — copy or symlink it onto your `PATH`, or install it directly with `cargo install --path .`.
 
 ### Using with an AI agent
 
 A matching `SKILL.md` ships in the repository root. Agents that support skills (e.g. Mistral Vibe) load it on demand, so the tool costs no context until it is actually needed. Copy or symlink the skill into your skills directory to make it available everywhere:
 
 ```bash
-mkdir -p ~/.vibe/skills/rustdoc
-ln -s "$(pwd)/SKILL.md" ~/.vibe/skills/rustdoc/SKILL.md
+mkdir -p ~/.vibe/skills/cratedoc
+ln -s "$(pwd)/SKILL.md" ~/.vibe/skills/cratedoc/SKILL.md
 ```
 
 The skill body documents every subcommand, so the agent can discover exact usage at run time.

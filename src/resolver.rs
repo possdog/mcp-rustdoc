@@ -2,9 +2,9 @@
 //!
 //! The resolution waterfall is: explicit version → Cargo.lock → Cargo.toml
 //! → crates.io API (latest published version). All paths search upward from
-//! `cwd`, so behavior depends on where the MCP server process was started.
+//! `cwd`, so behavior depends on where the CLI process was started.
 
-use crate::error::{McpRustdocError, Result};
+use crate::error::{CratedocError, Result};
 use crate::flight::SingleFlight;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ impl Resolver {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .user_agent("mcp-rustdoc")
+                .user_agent("cratedoc")
                 .build()
                 .unwrap_or_default(),
             latest_cache: Mutex::new(HashMap::new()),
@@ -123,7 +123,7 @@ impl Resolver {
             tracing::debug!("Using cached crates.io version for {}", crate_name);
             return match cached {
                 Some(version) => Ok(version),
-                None => Err(McpRustdocError::Other(format!(
+                None => Err(CratedocError::Other(format!(
                     "Crate {} not found on crates.io. It might be a local workspace crate or misspelled.",
                     crate_name
                 ))),
@@ -136,7 +136,7 @@ impl Resolver {
                 // Negative-cache the miss before reporting it, so repeated
                 // calls for a nonexistent crate do not re-query crates.io.
                 self.store_cached_latest(crate_name, &None);
-                return Err(McpRustdocError::Other(format!(
+                return Err(CratedocError::Other(format!(
                     "Crate {} not found on crates.io. It might be a local workspace crate or misspelled.",
                     crate_name
                 )));
@@ -197,7 +197,7 @@ impl Resolver {
     /// Search a `Cargo.lock` file for `crate_name` and return its pinned version.
     fn extract_from_lockfile(&self, path: &Path, crate_name: &str) -> Result<String> {
         let lockfile = cargo_lock::Lockfile::load(path)
-            .map_err(|e| McpRustdocError::Other(format!("Failed to parse Cargo.lock: {}", e)))?;
+            .map_err(|e| CratedocError::Other(format!("Failed to parse Cargo.lock: {}", e)))?;
 
         for package in lockfile.packages {
             if package.name.as_str() == crate_name {
@@ -205,7 +205,7 @@ impl Resolver {
             }
         }
 
-        Err(McpRustdocError::Other(format!(
+        Err(CratedocError::Other(format!(
             "Crate {} not found in Cargo.lock",
             crate_name
         )))
@@ -236,7 +236,7 @@ impl Resolver {
             }
         }
 
-        Err(McpRustdocError::Other(format!(
+        Err(CratedocError::Other(format!(
             "Crate {} not found in Cargo.toml",
             crate_name
         )))

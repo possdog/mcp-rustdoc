@@ -6,7 +6,7 @@
 //! Includes a format-patching pass that handles the v56→v57 transition
 //! (missing `path` field on `external_crates` entries).
 
-use crate::error::{McpRustdocError, Result};
+use crate::error::{CratedocError, Result};
 use reqwest::Client;
 use rustdoc_types::Crate;
 use std::io::Read;
@@ -32,7 +32,7 @@ impl Fetcher {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .user_agent("mcp-rustdoc")
+                .user_agent("cratedoc")
                 .build()
                 .unwrap_or_default(),
         }
@@ -58,7 +58,7 @@ impl Fetcher {
             match self.client.get(&url).send().await {
                 Ok(response) => {
                     if response.status() == reqwest::StatusCode::NOT_FOUND {
-                        return Err(McpRustdocError::Other(format!(
+                        return Err(CratedocError::Other(format!(
                             "Documentation not found on docs.rs for {} v{}. Note that docs.rs only builds rustdoc JSON for crates published after 2025-05-23.",
                             crate_name, version
                         )));
@@ -125,7 +125,7 @@ impl Fetcher {
             }
         }
 
-        Err(McpRustdocError::Other(format!(
+        Err(CratedocError::Other(format!(
             "Failed to fetch documentation for {} v{} after {} attempts. The network might be unstable, or docs.rs may be down. Please try again later. Last error: {}",
             crate_name,
             version,

@@ -1,6 +1,6 @@
 //! CLI argument parsing and command dispatch.
 //!
-//! Each former MCP tool maps to a subcommand with the same name
+//! Each subcommand renders one view of a crate's documentation
 //! (`list-items`, `get-item`, `search`, `implementations`, `implementors`,
 //! `list-workspace-crates`). All subcommands that take a crate resolve its
 //! version internally (explicit `--version` → local workspace → Cargo.lock
@@ -19,7 +19,7 @@ use rustdoc_types::Crate;
 
 #[derive(Parser)]
 #[command(
-    name = "mcp-rustdoc",
+    name = "cratedoc",
     version,
     about = "Browse Rust crate documentation from docs.rs and local workspaces as Markdown",
     subcommand_negates_reqs = true

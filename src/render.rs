@@ -10,7 +10,7 @@
 //!    `format_where_clause`, `format_fn_signature`, etc.).
 //!
 //! 2. **`Render` struct methods** — higher-level entry points that consume
-//!    a full `Crate` and produce complete Markdown output for each MCP tool
+//!    a full `Crate` and produce complete Markdown output for each subcommand
 //!    (`list-items`, `get-item`, `search`, `implementations`, `implementors`).
 //!
 //! The key design constraint is that all output is plain Markdown — never
@@ -30,7 +30,7 @@
 //! * Lifetime strings in rustdoc JSON already include the leading `'`, so
 //!   formatters must not prepend an extra one.
 
-use crate::error::{McpRustdocError, Result};
+use crate::error::{CratedocError, Result};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use rustdoc_types::{
@@ -629,14 +629,14 @@ impl Render {
         };
 
         let Some(item) = target_module else {
-            return Err(McpRustdocError::Other(format!(
+            return Err(CratedocError::Other(format!(
                 "Path `{}` not found.",
                 path.unwrap_or("")
             )));
         };
 
         let ItemEnum::Module(module) = &item.inner else {
-            return Err(McpRustdocError::Other(format!(
+            return Err(CratedocError::Other(format!(
                 "Path `{}` is not a module.",
                 path.unwrap_or("")
             )));
@@ -729,10 +729,7 @@ impl Render {
     /// trait items, type alias definition, constant/static definition).
     pub fn get_item(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return Err(McpRustdocError::Other(format!(
-                "Item `{}` not found.",
-                path
-            )));
+            return Err(CratedocError::Other(format!("Item `{}` not found.", path)));
         };
 
         let mut output = String::new();
@@ -1197,10 +1194,7 @@ impl Render {
     /// provided methods, associated types, and associated constants.
     pub fn implementations(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return Err(McpRustdocError::Other(format!(
-                "Item `{}` not found.",
-                path
-            )));
+            return Err(CratedocError::Other(format!("Item `{}` not found.", path)));
         };
 
         match &item.inner {
@@ -1216,7 +1210,7 @@ impl Render {
             ItemEnum::Enum(e) => Ok(Self::render_type_impls(krate, path, &e.impls)),
             ItemEnum::Union(u) => Ok(Self::render_type_impls(krate, path, &u.impls)),
 
-            _ => Err(McpRustdocError::Other(format!(
+            _ => Err(CratedocError::Other(format!(
                 "Item `{}` does not have implementations.",
                 path
             ))),
@@ -1332,14 +1326,11 @@ impl Render {
     /// queried crate.
     pub fn implementors(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return Err(McpRustdocError::Other(format!(
-                "Item `{}` not found.",
-                path
-            )));
+            return Err(CratedocError::Other(format!("Item `{}` not found.", path)));
         };
 
         let ItemEnum::Trait(t) = &item.inner else {
-            return Err(McpRustdocError::Other(format!(
+            return Err(CratedocError::Other(format!(
                 "Item `{}` is not a trait.",
                 path
             )));

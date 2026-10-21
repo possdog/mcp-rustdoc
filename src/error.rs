@@ -1,12 +1,12 @@
-//! Unified error type for all mcp-rustdoc operations.
+//! Unified error type for all cratedoc operations.
 //!
-//! `McpRustdocError` wraps cache, I/O, network, JSON, and TOML errors
+//! `CratedocError` wraps cache, I/O, network, JSON, and TOML errors
 //! plus a catch-all `Other` variant for ad-hoc error messages.
 
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum McpRustdocError {
+pub enum CratedocError {
     #[error("Cache error: {0}")]
     CacheError(String),
     #[error("IO error: {0}")]
@@ -21,4 +21,4 @@ pub enum McpRustdocError {
     Other(String),
 }
 
-pub type Result<T> = std::result::Result<T, McpRustdocError>;
+pub type Result<T> = std::result::Result<T, CratedocError>;

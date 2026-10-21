@@ -1,4 +1,4 @@
-# mcp-rustdoc
+# cratedoc
 
 ## Build & Test
 
@@ -26,7 +26,7 @@ src/cache.rs         immutable filesystem cache (dirs::cache_dir())
 
 ## CLI
 
-`mcp-rustdoc` is a plain CLI (clap). Subcommands map 1:1 to the former MCP
+`cratedoc` is a plain CLI (clap). Subcommands map 1:1 to the former MCP
 tools: `list-items`, `get-item`, `search`, `implementations`, `implementors`,
 `list-workspace-crates`. Every subcommand that takes a crate name resolves its
 version internally. Markdown goes to stdout; errors (item not found, path not

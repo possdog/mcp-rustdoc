@@ -1,6 +1,6 @@
 //! Single-flight deduplication for concurrent network fetches.
 //!
-//! The MCP server processes tool calls concurrently, so several calls for
+//! The engine fetches crates concurrently with other work, so several calls for
 //! the same not-yet-cached crate can race: each would miss the cache and
 //! issue its own third-party request. A `SingleFlight` serializes work per
 //! key — the first arrival performs the fetch while concurrent callers wait

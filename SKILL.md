@@ -1,11 +1,11 @@
 ---
-name: rustdoc
-description: Load when you need Rust crate documentation — API signatures, item details, impl blocks, or trait implementors for any crate on docs.rs or in the local workspace. Provides usage for the `mcp-rustdoc` CLI, which renders rustdoc JSON as Markdown.
+name: cratedoc
+description: Load when you need Rust crate documentation — API signatures, item details, impl blocks, or trait implementors for any crate on docs.rs or in the local workspace. Provides usage for the `cratedoc` CLI, which renders rustdoc JSON as Markdown.
 ---
 
-# rustdoc (mcp-rustdoc CLI)
+# cratedoc
 
-`mcp-rustdoc` renders rustdoc JSON (docs.rs or local workspace) as Markdown on
+`cratedoc` renders rustdoc JSON (docs.rs or local workspace) as Markdown on
 stdout. Version resolution is automatic: explicit `--version` → local
 workspace crate → `Cargo.lock` → `Cargo.toml` → crates.io latest. No version
 lookup step is needed before querying a crate the current project depends on.
@@ -13,12 +13,12 @@ lookup step is needed before querying a crate the current project depends on.
 ## Subcommands
 
 ```bash
-mcp-rustdoc list-workspace-crates                # crates in the current workspace
-mcp-rustdoc list-items <crate> [module-path]     # items in a crate or module
-mcp-rustdoc get-item <crate> <item-path>         # full docs for one item
-mcp-rustdoc search <crate> <query> [--limit N]   # fuzzy search names + docs
-mcp-rustdoc implementations <crate> <type-path>  # impl blocks for a type
-mcp-rustdoc implementors <crate> <trait-path>     # types implementing a trait
+cratedoc list-workspace-crates                # crates in the current workspace
+cratedoc list-items <crate> [module-path]     # items in a crate or module
+cratedoc get-item <crate> <item-path>         # full docs for one item
+cratedoc search <crate> <query> [--limit N]   # fuzzy search names + docs
+cratedoc implementations <crate> <type-path>  # impl blocks for a type
+cratedoc implementors <crate> <trait-path>     # types implementing a trait
 ```
 
 All crate-taking subcommands accept `--version <VERSION>` to pin a release.
@@ -41,9 +41,9 @@ Output is Markdown on stdout; logs and errors go to stderr. Not-found items
 exit 1, so results compose with shell tools:
 
 ```bash
-mcp-rustdoc list-items tokio | grep -i runtime
-mcp-rustdoc search serde error --limit 20 | head -40
-mcp-rustdoc get-item serde serde::Serialize | head -60
+cratedoc list-items tokio | grep -i runtime
+cratedoc search serde error --limit 20 | head -40
+cratedoc get-item serde serde::Serialize | head -60
 ```
 
 Prefer piping through `head`/`grep` when you only need part of the output —

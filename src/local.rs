@@ -4,7 +4,7 @@
 //! Includes staleness detection based on `Cargo.toml` and `src/` file
 //! modification times. Requires the **nightly** toolchain.
 
-use crate::error::{McpRustdocError, Result};
+use crate::error::{CratedocError, Result};
 use rustdoc_types::Crate;
 use serde::Deserialize;
 use std::env;
@@ -148,11 +148,11 @@ impl Local {
             if !rustdoc_output.status.success() {
                 let stderr = String::from_utf8_lossy(&rustdoc_output.stderr);
                 if stderr.contains("toolchain 'nightly'") && stderr.contains("is not installed") {
-                    return Err(McpRustdocError::Other(
+                    return Err(CratedocError::Other(
                         "Nightly toolchain is required to generate rustdoc JSON. Please run: rustup toolchain install nightly".to_string()
                     ));
                 }
-                return Err(McpRustdocError::Other(format!(
+                return Err(CratedocError::Other(format!(
                     "Failed to generate local rustdoc for {}: {}",
                     crate_name, stderr
                 )));
@@ -160,7 +160,7 @@ impl Local {
         }
 
         if !json_path.exists() {
-            return Err(McpRustdocError::Other(format!(
+            return Err(CratedocError::Other(format!(
                 "Expected rustdoc JSON at {:?} but it was not found.",
                 json_path
             )));
@@ -187,7 +187,7 @@ impl Local {
             .await?;
 
         if !output.status.success() {
-            return Err(McpRustdocError::Other(
+            return Err(CratedocError::Other(
                 "Failed to run cargo metadata".to_string(),
             ));
         }

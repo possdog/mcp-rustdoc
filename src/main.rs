@@ -4,7 +4,7 @@
 //! piped into other shell commands).
 
 use clap::Parser;
-use mcp_rustdoc::cli::{Cli, Engine};
+use cratedoc::cli::{Cli, Engine};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
