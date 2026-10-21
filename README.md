@@ -2,9 +2,9 @@
 
 > 🤖 This code was written by a human-led AI agent.
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives AI agents rich, structured access to Rust crate documentation.
+A CLI that gives humans, AI agents, and shell scripts rich, structured access to Rust crate documentation.
 
-`mcp-rustdoc` bridges the gap between AI assistants (like Claude Desktop or OpenCode) and Rust codebases. Instead of having an agent hallucinate API signatures or scrape raw HTML from docs.rs, this server fetches and parses the exact `rustdoc` JSON ASTs and formats them into clean, LLM-optimized Markdown.
+Instead of hallucinating API signatures or scraping raw HTML from docs.rs, `mcp-rustdoc` fetches and parses the exact `rustdoc` JSON ASTs and formats them into clean, LLM-optimized Markdown. It works as a plain command-line tool: agents learn it on demand via a `SKILL.md` instead of carrying tool definitions in every session, and its stdout-only output can be piped straight into `grep`, `head`, or other commands.
 
 ## Features
 
@@ -15,9 +15,9 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 - **Cross-References:** Automatically resolves intra-doc links (e.g., ``[`Cache`]`` becomes ``[`mcp_rustdoc::cache::Cache`]``) so agents can easily navigate the codebase.
 - **Feature Gates:** Explicitly annotates items that require specific `#[cfg(feature = "...")]` flags.
 
-## Provided Tools
+## Commands
 
-The server exposes 6 powerful tools to your AI agent:
+The binary exposes 6 subcommands:
 
 1. **`list-workspace-crates`**
    - Lists all crates in the current workspace with their versions, local paths, and availability status.
@@ -32,6 +32,21 @@ The server exposes 6 powerful tools to your AI agent:
 6. **`implementors`**
    - Returns all concrete types that implement a given trait.
 
+All crate-taking subcommands accept `--version <VERSION>` to pin a release; without it, the version is resolved from local workspace context, `Cargo.lock`, `Cargo.toml`, or crates.io latest.
+
+## Piping
+
+Markdown goes to stdout, and logs/errors go to stderr, so output composes with other shell commands:
+
+```bash
+mcp-rustdoc list-items serde | grep module
+mcp-rustdoc search tokio runtime --limit 20 | head -30
+mcp-rustdoc get-item serde_json serde_json::Value | less
+mcp-rustdoc get-item serde serde::Serialize || echo "not found"
+```
+
+A missing item or crate is an error: message on stderr, exit code 1.
+
 ## Installation & Setup
 
 ### Prerequisites
@@ -42,7 +57,7 @@ You must have the **nightly** Rust toolchain installed, as generating rustdoc JS
 rustup toolchain install nightly
 ```
 
-### 1. Build the Server
+### Build
 
 Clone the repository and build it in release mode:
 
@@ -52,29 +67,18 @@ cd mcp-rustdoc
 cargo build --release
 ```
 
-The binary will be located at `target/release/mcp-rustdoc`.
+The binary will be located at `target/release/mcp-rustdoc` — copy or symlink it onto your `PATH`, or install it directly with `cargo install --path .`.
 
-### 2. Configure Your MCP Client
+### Using with an AI agent
 
-Add the built binary to your MCP client's configuration file. The server communicates over standard input/output (`stdio`).
+A matching `SKILL.md` ships in the repository root. Agents that support skills (e.g. Mistral Vibe) load it on demand, so the tool costs no context until it is actually needed. Copy or symlink the skill into your skills directory to make it available everywhere:
 
-#### For OpenCode / Claude Desktop:
-Add the following to your `mcp.json` or `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "mcp-rustdoc": {
-      "command": "/absolute/path/to/mcp-rustdoc/target/release/mcp-rustdoc",
-      "args": []
-    }
-  }
-}
+```bash
+mkdir -p ~/.vibe/skills/rustdoc
+ln -s "$(pwd)/SKILL.md" ~/.vibe/skills/rustdoc/SKILL.md
 ```
 
-### 3. Restart Your Client
-
-Restart your MCP client (or reload the MCP connections). The agent will now automatically discover the tools and use them to answer questions about your Rust code!
+The skill body documents every subcommand, so the agent can discover exact usage at run time.
 
 ## Architecture
 
@@ -83,14 +87,15 @@ Restart your MCP client (or reload the MCP connections). The agent will now auto
 - **`local.rs`**: Orchestrates `cargo metadata` and `cargo +nightly rustdoc` to generate docs for local workspace members.
 - **`resolver.rs`**: Intelligently resolves omitted versions by scanning upward for `Cargo.lock` or `Cargo.toml`.
 - **`render.rs`**: Contains the core logic for converting `rustdoc-types` structures into concise, Markdown-formatted text for the LLM.
-- **`server.rs`**: The `rmcp` handler that defines the JSON Schemas for the tools and routes the incoming JSON-RPC calls.
+- **`cli.rs`**: Defines the subcommands (clap) and routes each one to the rendering engine.
+- **`main.rs`**: Entrypoint — Tokio runtime, tracing, and dispatch.
 
 ## Logging
 
-To view debug logs from the server (which are carefully routed to `stderr` to avoid corrupting the `stdio` MCP channel), you can run the server manually with `RUST_LOG=debug`:
+Logs are carefully routed to `stderr` (stdout carries only Markdown output, so it stays pipeable). To view debug logs, run with `RUST_LOG=debug`:
 
 ```bash
-RUST_LOG=debug cargo run --release
+RUST_LOG=debug cargo run --release -- search serde error
 ```
 
 ## Limitations

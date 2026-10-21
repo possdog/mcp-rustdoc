@@ -30,6 +30,7 @@
 //! * Lifetime strings in rustdoc JSON already include the leading `'`, so
 //!   formatters must not prepend an extra one.
 
+use crate::error::{McpRustdocError, Result};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use rustdoc_types::{
@@ -619,7 +620,7 @@ impl Render {
     /// When `path` is `None`, lists the crate root. When `path` is `Some`,
     /// looks up the named module and lists its contents. Re-exports (`use`
     /// items) are resolved to show the target item's kind and doc summary.
-    pub fn list_items(&self, krate: &Crate, path: Option<&str>) -> String {
+    pub fn list_items(&self, krate: &Crate, path: Option<&str>) -> Result<String> {
         let root_id = &krate.root;
         let target_module = if let Some(p) = path {
             Self::find_item_by_path(krate, p)
@@ -628,11 +629,17 @@ impl Render {
         };
 
         let Some(item) = target_module else {
-            return "Path not found.\n".to_string();
+            return Err(McpRustdocError::Other(format!(
+                "Path `{}` not found.",
+                path.unwrap_or("")
+            )));
         };
 
         let ItemEnum::Module(module) = &item.inner else {
-            return "Provided path is not a module.\n".to_string();
+            return Err(McpRustdocError::Other(format!(
+                "Path `{}` is not a module.",
+                path.unwrap_or("")
+            )));
         };
 
         let mut output = format!(
@@ -686,7 +693,7 @@ impl Render {
             output.push_str(&format!("- **{}** `{}`: {}\n", kind, display_name, summary));
         }
 
-        output
+        Ok(output)
     }
 
     /// Resolve an `ItemEnum` variant to a human-readable kind label for
@@ -720,9 +727,12 @@ impl Render {
     /// feature gates, deprecation notice, full doc comment with resolved
     /// links, and kind-specific sections (fields, variants, signature,
     /// trait items, type alias definition, constant/static definition).
-    pub fn get_item(&self, krate: &Crate, path: &str) -> String {
+    pub fn get_item(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return format!("Item `{}` not found.", path);
+            return Err(McpRustdocError::Other(format!(
+                "Item `{}` not found.",
+                path
+            )));
         };
 
         let mut output = String::new();
@@ -990,7 +1000,7 @@ impl Render {
             _ => {}
         }
 
-        output
+        Ok(output)
     }
 
     /// Render required methods, provided methods, associated types, and
@@ -1146,7 +1156,7 @@ impl Render {
             }
         }
 
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        results.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
         let mut output = format!("# Search Results for `{}`\n\n", query);
         for (_, item) in results.into_iter().take(limit) {
@@ -1185,9 +1195,12 @@ impl Render {
     ///
     /// For a trait: show the trait's own interface — required methods,
     /// provided methods, associated types, and associated constants.
-    pub fn implementations(&self, krate: &Crate, path: &str) -> String {
+    pub fn implementations(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return format!("Item `{}` not found.", path);
+            return Err(McpRustdocError::Other(format!(
+                "Item `{}` not found.",
+                path
+            )));
         };
 
         match &item.inner {
@@ -1195,15 +1208,18 @@ impl Render {
             ItemEnum::Trait(t) => {
                 let mut output = format!("# Interface of trait `{}`\n\n", path);
                 Self::render_trait_items(krate, t, &mut output);
-                output
+                Ok(output)
             }
 
             // For structs/enums/unions: list impl blocks
-            ItemEnum::Struct(s) => Self::render_type_impls(krate, path, &s.impls),
-            ItemEnum::Enum(e) => Self::render_type_impls(krate, path, &e.impls),
-            ItemEnum::Union(u) => Self::render_type_impls(krate, path, &u.impls),
+            ItemEnum::Struct(s) => Ok(Self::render_type_impls(krate, path, &s.impls)),
+            ItemEnum::Enum(e) => Ok(Self::render_type_impls(krate, path, &e.impls)),
+            ItemEnum::Union(u) => Ok(Self::render_type_impls(krate, path, &u.impls)),
 
-            _ => format!("Item `{}` does not have implementations.", path),
+            _ => Err(McpRustdocError::Other(format!(
+                "Item `{}` does not have implementations.",
+                path
+            ))),
         }
     }
 
@@ -1314,19 +1330,25 @@ impl Render {
     /// `MyType` lives in a different crate) are an architectural limitation
     /// of rustdoc JSON — the JSON only contains impls defined within the
     /// queried crate.
-    pub fn implementors(&self, krate: &Crate, path: &str) -> String {
+    pub fn implementors(&self, krate: &Crate, path: &str) -> Result<String> {
         let Some(item) = Self::find_item_by_path(krate, path) else {
-            return format!("Item `{}` not found.", path);
+            return Err(McpRustdocError::Other(format!(
+                "Item `{}` not found.",
+                path
+            )));
         };
 
         let ItemEnum::Trait(t) = &item.inner else {
-            return format!("Item `{}` is not a trait.", path);
+            return Err(McpRustdocError::Other(format!(
+                "Item `{}` is not a trait.",
+                path
+            )));
         };
 
         let mut output = format!("# Implementors of `{}`\n\n", path);
         if t.implementations.is_empty() {
             output.push_str("*No implementors found in this crate.*\n");
-            return output;
+            return Ok(output);
         }
 
         for id in &t.implementations {
@@ -1338,6 +1360,6 @@ impl Render {
             };
             output.push_str(&format!("- `{}`\n", format_type(&imp.for_)));
         }
-        output
+        Ok(output)
     }
 }

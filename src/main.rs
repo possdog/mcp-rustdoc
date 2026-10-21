@@ -1,9 +1,10 @@
-//! Entrypoint: initialises Tokio runtime, tracing (stderr), and the MCP
-//! stdio transport. All logging goes to stderr because stdout carries the
-//! MCP wire protocol.
+//! Entrypoint: initialises Tokio runtime, tracing (stderr), parses CLI
+//! arguments, and dispatches the requested subcommand. All logging goes to
+//! stderr because stdout carries the documentation output (so it can be
+//! piped into other shell commands).
 
-use mcp_rustdoc::server::RustdocServer;
-use rmcp::{ServiceExt, transport::stdio};
+use clap::Parser;
+use mcp_rustdoc::cli::{Cli, Engine};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,11 +13,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
 
-    tracing::info!("Starting mcp-rustdoc");
+    let cli = Cli::parse();
+    let engine = Engine::new()?;
 
-    let server = RustdocServer::new()?;
-    let service = server.serve(stdio()).await?;
-    service.waiting().await?;
-
-    Ok(())
+    match engine.run(cli.command).await {
+        Ok(output) => {
+            println!("{output}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
 }

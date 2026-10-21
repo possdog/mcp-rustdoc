@@ -2,20 +2,19 @@
 name = "mcp-rustdoc"
 version = "0.1.0"
 edition = "2024"
-description = "An MCP for giving agents access to crate documentation."
+description = "A CLI for browsing Rust crate documentation from docs.rs and local workspaces."
 license = "AGPL-3.0-only"
 repository = "https://tangled.org/poss.dog/mcp-rustdoc"
-keywords = ["mcp", "docs"]
-categories = ["development-tools"]
+keywords = ["cli", "docs", "rustdoc"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 cargo-lock = "^10"
+clap = { version = "^4", features = ["derive"] }
 dirs = "^6"
 fuzzy-matcher = "^0.3"
 reqwest = { version = "^0.12", features = ["json"] }
-rmcp = { version = "^0.14", features = ["transport-io"] }
 rustdoc-types = "^0.57"
-schemars = "^0.8"
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 thiserror = "^2"

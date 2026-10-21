@@ -5,16 +5,17 @@
 ```bash
 cargo build --release          # compile
 cargo clippy                   # lint
-RUST_LOG=debug cargo run       # run server with visible logs
+RUST_LOG=debug cargo run -- <subcommand>   # run CLI with visible logs
 ```
 
-Logging goes to **stderr** — stdout carries the MCP protocol.
+Logging goes to **stderr** — stdout carries the Markdown output (so it can
+be piped into other shell commands).
 
 ## Architecture
 
 ```
-src/main.rs          entrypoint: tokio runtime + MCP stdio transport
-src/server.rs        RustdocServer (manual tool routing, no rmcp macros)
+src/main.rs          entrypoint: tokio runtime + tracing + CLI dispatch
+src/cli.rs           clap argument parsing, Engine (component wiring + get_crate)
 src/render.rs        crate JSON → LLM-friendly Markdown (~1300 lines)
 src/fetcher.rs       downloads .json.zst from docs.rs
 src/flight.rs        single-flight dedup for concurrent fetches (version + JSON)
@@ -23,15 +24,14 @@ src/local.rs         cargo +nightly rustdoc for workspace crates
 src/cache.rs         immutable filesystem cache (dirs::cache_dir())
 ```
 
-## Server: manual tool routing (no rmcp macros)
+## CLI
 
-`RustdocServer` implements `rmcp::ServerHandler` by manually defining
-`list_tools` and `call_tool`. This is intentional — it allows
-`json_schema_for()` to strip `"null"` from schemars-generated schemas
-(Gemini/Vertex AI rejects `type: ["string", "null"]` and `anyOf` with null).
-
-**Do not** switch to `#[tool]`/`#[tool_router]` macros without retesting
-against strict schema clients.
+`mcp-rustdoc` is a plain CLI (clap). Subcommands map 1:1 to the former MCP
+tools: `list-items`, `get-item`, `search`, `implementations`, `implementors`,
+`list-workspace-crates`. Every subcommand that takes a crate name resolves its
+version internally. Markdown goes to stdout; errors (item not found, path not
+a module, etc.) go to stderr with exit code 1, so failures are scriptable
+(`||`, `set -e`).
 
 ## Render pipeline
 
@@ -58,7 +58,7 @@ against strict schema clients.
   absolute `/opt/rustwide/…` (→ dep crate docs.rs URL), and other absolute
   paths (→ plain `file:line` for local workspace use).
 
-### `implementations` tool behavior
+### `implementations` subcommand behavior
 
 - **Struct/enum/union**: renders each inherent impl block with full method
   signatures, grouped by impl block (preserving per-block where constraints).
@@ -84,14 +84,16 @@ against strict schema clients.
 
 ## Other conventions
 
-- **No HTTP/SSE** — transport is stdio-only. Do not add other transports
-  without explicit request.
-- **Markdown output only** — all tools return Markdown strings. Never HTML
-  or raw JSON.
+- **CLI, not a server** — the binary is a one-shot CLI. Do not add daemon,
+  server, or MCP transport modes without explicit request.
+- **Markdown output only** — all subcommands print Markdown to stdout. Never
+  HTML or raw JSON.
+- **Errors on stderr, exit 1** — not-found / wrong-kind results are errors,
+  never stdout placeholder text.
 - **Local crates require nightly** — `cargo +nightly rustdoc` is needed for
   `--output-format json -Z unstable-options`.
-- **Version resolution is baked in** — every tool that takes `crate_name`
-  resolves versions internally (explicit version → Cargo.lock → Cargo.toml
-  → crates.io latest). No separate tool call needed. crates.io lookups are
-  cached in memory (24h TTL for versions, 1h for not-found misses); a
+- **Version resolution is baked in** — every subcommand that takes a crate
+  name resolves versions internally (explicit version → Cargo.lock →
+  Cargo.toml → crates.io latest). No separate call needed. crates.io lookups
+  are cached in memory (24h TTL for versions, 1h for not-found misses); a
   newly published version can lag up to that TTL.
