@@ -5,32 +5,9 @@
 //! `cwd`, so behavior depends on where the CLI process was started.
 
 use crate::error::{CratedocError, Result};
-use crate::flight::SingleFlight;
 use reqwest::Client;
-use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
-/// How long a crates.io version lookup is trusted before re-querying.
-/// Agents typically issue many tool calls against the same crate, and
-/// crates.io asks clients to cache API responses, so successful lookups
-/// are held for a day. Trade-off: a version published while an entry is
-/// cached is not seen until the entry expires.
-const VERSION_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// Not-found results are cached for a shorter window so a crate published
-/// right after a miss becomes visible quickly, while a flood of calls for
-/// a misspelled or private crate name still avoids re-querying crates.io.
-const NOT_FOUND_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
-
-/// A cached crates.io lookup. `version: None` is a negative-cache entry
-/// (crates.io returned 404 for this crate name).
-struct CachedLatest {
-    version: Option<String>,
-    expires_at: Instant,
-}
 
 /// Resolves a crate version from several sources, in priority order:
 /// 1. An explicitly provided version (returned as-is).
@@ -39,13 +16,13 @@ struct CachedLatest {
 ///    leading sigils (`^`, `~`, etc.) stripped.
 /// 4. The crates.io API — the latest version published to crates.io.
 ///
-/// crates.io lookups (step 4) are cached in memory with a TTL; the local
-/// file reads (steps 2–3) are intentionally not cached — they are cheap and
-/// reflect changes to the project immediately.
+/// The local file reads (steps 2–3) are re-done on every invocation — they
+/// are cheap and reflect changes to the project immediately. crates.io
+/// lookups (step 4) happen at most once per invocation, so they are not
+/// cached in memory; the persistent disk cache covers the fetched rustdoc
+/// JSON instead.
 pub struct Resolver {
     client: Client,
-    latest_cache: Mutex<HashMap<String, CachedLatest>>,
-    flight: SingleFlight,
 }
 
 // Subset of the `GET https://crates.io/api/v1/crates/{name}` response.
@@ -73,8 +50,6 @@ impl Resolver {
                 .user_agent("cratedoc")
                 .build()
                 .unwrap_or_default(),
-            latest_cache: Mutex::new(HashMap::new()),
-            flight: SingleFlight::new(),
         }
     }
 
@@ -112,70 +87,17 @@ impl Resolver {
             return Ok(clean_version.to_string());
         }
 
-        // 3. Latest from crates.io. Single-flight per crate: concurrent calls
-        //    for the same crate share one crates.io request instead of each
-        //    missing the TTL cache and racing to fetch it.
-        let _guard = self.flight.lock_for(crate_name).await;
-
-        // Waiters re-check the cache after acquiring — the first arrival
-        // may have resolved and cached the version while we waited.
-        if let Some(cached) = self.get_cached_latest(crate_name) {
-            tracing::debug!("Using cached crates.io version for {}", crate_name);
-            return match cached {
-                Some(version) => Ok(version),
-                None => Err(CratedocError::Other(format!(
-                    "Crate {} not found on crates.io. It might be a local workspace crate or misspelled.",
-                    crate_name
-                ))),
-            };
-        }
-
+        // 3. Latest from crates.io.
         let latest = match self.fetch_latest_from_crates_io(crate_name).await? {
             Some(version) => version,
             None => {
-                // Negative-cache the miss before reporting it, so repeated
-                // calls for a nonexistent crate do not re-query crates.io.
-                self.store_cached_latest(crate_name, &None);
                 return Err(CratedocError::Other(format!(
                     "Crate {} not found on crates.io. It might be a local workspace crate or misspelled.",
                     crate_name
                 )));
             }
         };
-        self.store_cached_latest(crate_name, &Some(latest.clone()));
         Ok(latest)
-    }
-
-    /// Return a cached crates.io lookup for `crate_name` if one exists and
-    /// has not expired. `Some(Some(v))` is a cached version, `Some(None)` is
-    /// a cached not-found, `None` means no usable entry (re-query crates.io).
-    fn get_cached_latest(&self, crate_name: &str) -> Option<Option<String>> {
-        // A poisoned lock is treated as a miss (fail-open) — the worst case
-        // is an extra crates.io request, never a wrong answer.
-        let cache = self.latest_cache.lock().ok()?;
-        match cache.get(crate_name) {
-            Some(entry) if Instant::now() < entry.expires_at => Some(entry.version.clone()),
-            _ => None,
-        }
-    }
-
-    /// Cache a crates.io lookup result under `crate_name`. `None` caches a
-    /// not-found result with the shorter TTL.
-    fn store_cached_latest(&self, crate_name: &str, version: &Option<String>) {
-        let ttl = if version.is_some() {
-            VERSION_CACHE_TTL
-        } else {
-            NOT_FOUND_CACHE_TTL
-        };
-        if let Ok(mut cache) = self.latest_cache.lock() {
-            cache.insert(
-                crate_name.to_string(),
-                CachedLatest {
-                    version: version.clone(),
-                    expires_at: Instant::now() + ttl,
-                },
-            );
-        }
     }
 
     /// Walk up the directory tree from `start_dir` looking for `file_name`.
@@ -248,7 +170,7 @@ impl Resolver {
     /// endpoint stopped returning JSON metadata and now serves HTML.)
     ///
     /// Returns `Ok(None)` for a 404 so the caller can distinguish a definite
-    /// not-found (cacheable) from transient network failures (never cached).
+    /// not-found from transient network failures (which surface as `Err`).
     async fn fetch_latest_from_crates_io(&self, crate_name: &str) -> Result<Option<String>> {
         let url = format!("https://crates.io/api/v1/crates/{}", crate_name);
 
@@ -267,49 +189,43 @@ impl Resolver {
 mod tests {
     use super::*;
 
+    /// Write `content` to a uniquely named file in the system temp dir and
+    /// return its path. Unique per test process so parallel tests do not
+    /// collide on one filename.
+    fn temp_file(name: &str, content: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("cratedoc-test-{}-{}", std::process::id(), name));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
     #[test]
-    fn cached_version_is_served_within_ttl() {
+    fn cargo_toml_string_dependency_yields_version() {
+        let path = temp_file("string-dep.toml", "[dependencies]\nfoo = \"^1.2\"\n");
         let resolver = Resolver::new();
-        resolver.store_cached_latest("foo", &Some("1.2.3".to_string()));
         assert_eq!(
-            resolver.get_cached_latest("foo"),
-            Some(Some("1.2.3".to_string()))
+            resolver.extract_from_cargo_toml(&path, "foo").unwrap(),
+            "^1.2"
         );
     }
 
     #[test]
-    fn not_found_is_negative_cached() {
+    fn cargo_toml_table_dependency_yields_version() {
+        let path = temp_file(
+            "table-dep.toml",
+            "[dependencies]\nfoo = { version = \"1.2.3\", features = [\"bar\"] }\n",
+        );
         let resolver = Resolver::new();
-        resolver.store_cached_latest("foo", &None);
-        assert_eq!(resolver.get_cached_latest("foo"), Some(None));
+        assert_eq!(
+            resolver.extract_from_cargo_toml(&path, "foo").unwrap(),
+            "1.2.3"
+        );
     }
 
     #[test]
-    fn expired_entry_is_treated_as_a_miss() {
+    fn cargo_toml_missing_dependency_is_an_error() {
+        let path = temp_file("missing-dep.toml", "[dependencies]\nfoo = \"1.0\"\n");
         let resolver = Resolver::new();
-        // Insert directly with a deadline in the past instead of waiting out
-        // the (hours-long) real TTLs.
-        let mut cache = resolver.latest_cache.lock().unwrap();
-        cache.insert(
-            "foo".to_string(),
-            CachedLatest {
-                version: Some("1.2.3".to_string()),
-                expires_at: Instant::now() - Duration::from_millis(1),
-            },
-        );
-        drop(cache);
-        assert_eq!(resolver.get_cached_latest("foo"), None);
-    }
-
-    #[tokio::test]
-    async fn resolve_version_serves_negative_cache_without_network() {
-        let resolver = Resolver::new();
-        // A name that cannot appear in any Cargo.lock/Cargo.toml on this
-        // machine, so resolution must fall through to the cached miss.
-        resolver.store_cached_latest("definitely-not-a-real-crate-xyz", &None);
-        let result = resolver
-            .resolve_version("definitely-not-a-real-crate-xyz", None)
-            .await;
-        assert!(result.is_err());
+        assert!(resolver.extract_from_cargo_toml(&path, "bar").is_err());
     }
 }

@@ -9,7 +9,6 @@
 use crate::cache::Cache;
 use crate::error::Result;
 use crate::fetcher::Fetcher;
-use crate::flight::SingleFlight;
 use crate::local::Local;
 use crate::render::Render;
 use crate::resolver::Resolver;
@@ -99,7 +98,6 @@ pub enum Command {
 pub struct Engine {
     cache: std::sync::Arc<Cache>,
     fetcher: std::sync::Arc<Fetcher>,
-    flight: std::sync::Arc<SingleFlight>,
     local: std::sync::Arc<Local>,
     resolver: std::sync::Arc<Resolver>,
     render: std::sync::Arc<Render>,
@@ -110,7 +108,6 @@ impl Engine {
         Ok(Self {
             cache: std::sync::Arc::new(Cache::new()?),
             fetcher: std::sync::Arc::new(Fetcher::new()),
-            flight: std::sync::Arc::new(SingleFlight::new()),
             local: std::sync::Arc::new(Local::new()),
             resolver: std::sync::Arc::new(Resolver::new()),
             render: std::sync::Arc::new(Render::new()),
@@ -134,21 +131,6 @@ impl Engine {
         let resolved_version = self.resolver.resolve_version(crate_name, version).await?;
         let target = "x86_64-unknown-linux-gnu";
 
-        if let Ok(Some(krate)) = self.cache.get(crate_name, &resolved_version, target) {
-            return Ok(krate);
-        }
-
-        // Single-flight per crate+version: concurrent calls for the same
-        // not-yet-cached crate wait here and pick up the winner's cache
-        // entry instead of each downloading the (potentially multi-MB)
-        // rustdoc JSON from docs.rs.
-        let _guard = self
-            .flight
-            .lock_for(&format!("{}@{}", crate_name, resolved_version))
-            .await;
-
-        // Re-check the cache after acquiring — the first arrival may have
-        // fetched and cached the crate while we waited.
         if let Ok(Some(krate)) = self.cache.get(crate_name, &resolved_version, target) {
             return Ok(krate);
         }

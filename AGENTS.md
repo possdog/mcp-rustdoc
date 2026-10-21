@@ -18,7 +18,6 @@ src/main.rs          entrypoint: tokio runtime + tracing + CLI dispatch
 src/cli.rs           clap argument parsing, Engine (component wiring + get_crate)
 src/render.rs        crate JSON → LLM-friendly Markdown (~1300 lines)
 src/fetcher.rs       downloads .json.zst from docs.rs
-src/flight.rs        single-flight dedup for concurrent fetches (version + JSON)
 src/resolver.rs      version resolution: explicit → Cargo.lock → Cargo.toml → crates.io
 src/local.rs         cargo +nightly rustdoc for workspace crates
 src/cache.rs         immutable filesystem cache (dirs::cache_dir())
@@ -94,6 +93,6 @@ a module, etc.) go to stderr with exit code 1, so failures are scriptable
   `--output-format json -Z unstable-options`.
 - **Version resolution is baked in** — every subcommand that takes a crate
   name resolves versions internally (explicit version → Cargo.lock →
-  Cargo.toml → crates.io latest). No separate call needed. crates.io lookups
-  are cached in memory (24h TTL for versions, 1h for not-found misses); a
-  newly published version can lag up to that TTL.
+  Cargo.toml → crates.io latest). No separate call needed. Version
+  lookups are not cached across invocations; the fetched rustdoc JSON is
+  cached on disk per crate+version.
